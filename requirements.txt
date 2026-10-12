@@ -1,7 +1,8 @@
-# NOTE: torch/torchvision/torchaudio with +cu126 are NOT on PyPI.
-# Install them from the PyTorch CUDA index:
+# torch/torchvision/torchaudio pinned to CPU builds (default PyPI, ~200MB, no CUDA).
+# The app runs on CPU out of the box — lightweight install for everyone.
+# For GPU dev only, install the CUDA build separately (NOT via this file):
 #   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
-# (cu126 chosen because driver 566.07 supports up to CUDA 12.7; cu128 would need driver 12.8+)
+# ONNX-based inference (lightweight + GPU-capable) is planned to replace torch at deploy time.
 annotated-doc==0.0.5
 anyio==4.15.1
 certifi==2026.7.22
@@ -52,9 +53,9 @@ shellingham==1.5.4
 six==1.17.0
 sympy==1.14.0
 tokenizers==0.23.3
-torch==2.14.1+cu126
-torchaudio==2.11.0+cu126
-torchvision==0.29.1+cu126
+torch==2.14.1
+torchaudio==2.11.0
+torchvision==0.29.1
 tqdm==4.70.1
 transformers==5.19.0
 truststore==0.10.4
