@@ -9,7 +9,7 @@ from transformers import pipeline
 # Настройки
 # ==============================
 
-FACE_MODEL_PATH = "chekpoints/yolov8n-face.pt"
+FACE_MODEL_PATH = "model/yolov8n-face.pt"
 VIDEO_SOURCE = "test.mp4"  # Вставьте сюда ссылку на ресурс или путь к видео
 
 CONF_THRESHOLD = 0.45
@@ -141,7 +141,7 @@ def main():
         results = face_model.track(
             small,
             persist=True,
-            tracker="bytetrack.yaml",
+            tracker="configs/bytetrack.yaml",
             conf=CONF_THRESHOLD,
             imgsz=YOLO_IMGSZ,
             device=YOLO_DEVICE,
