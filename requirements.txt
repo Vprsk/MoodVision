@@ -60,3 +60,7 @@ ultralytics==8.4.175
 ultralytics-platform==0.1.82
 ultralytics-thop==2.2.2
 urllib3==2.8.0
+pydantic==2.14.1
+pydantic-core==2.50.1
+annotated-types==0.8.0
+typing-inspection==0.4.4

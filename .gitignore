@@ -2,3 +2,5 @@
 main.py
 test.mp4
 /.vscode
+__pycache__/
+*.pyc

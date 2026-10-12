@@ -1,100 +1,45 @@
+"""Тонкий слой приложения (экс-прототип try.py).
+
+Знает ТОЛЬКО про контракт BaseFaceEmotionModel: читает видео, вызывает
+predict() и рисует результат. Конкретная модель подставляется через DI.
+"""
+
+import sys
 import time
+from pathlib import Path
 
 import cv2
-import torch
-from ultralytics import YOLO
-from transformers import pipeline
 
-# ==============================
-# Настройки
-# ==============================
+# Позволяет запускать `python scripts/try.py` из корня проекта
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-FACE_MODEL_PATH = "model/yolov8n-face.pt"
-VIDEO_SOURCE = "test.mp4"  # Вставьте сюда ссылку на ресурс или путь к видео
+from contracts import BaseFaceEmotionModel, Emotion, FaceDetection, FrameResult
+from models import CurrentYoloVitModel
 
-CONF_THRESHOLD = 0.45
-EMOTION_CONF_THRESHOLD = 0.35
+VIDEO_SOURCE = "data/test.mp4"
 
-YOLO_IMGSZ = 416
-ANALYZE_EVERY_N_FRAMES = 5
-FRAME_SCALE = 0.5
+# Цвет рамки по эмоции (default — зелёный)
+EMOTION_COLORS = {
+    Emotion.UNKNOWN: (0, 165, 255),
+    Emotion.HAPPY: (0, 255, 255),
+    Emotion.SAD: (255, 0, 0),
+    Emotion.ANGRY: (0, 0, 255),
+}
+DEFAULT_COLOR = (0, 255, 0)
 
-# ==============================
-# Выбор устройства
-# ==============================
 
-CUDA_AVAILABLE = torch.cuda.is_available()
+def draw_result(frame, det: FaceDetection) -> None:
+    """Отрисовывает одну детекцию. Уровень приложения: ничего не знает о моделях."""
+    x1, y1 = det.bbox.x_min, det.bbox.y_min
+    x2, y2 = det.bbox.x_max, det.bbox.y_max
 
-if CUDA_AVAILABLE:
-    DEVICE = 0
-    YOLO_DEVICE = 0
-    TORCH_DTYPE = torch.float16
-    print(f"CUDA доступна: {torch.cuda.get_device_name(0)}")
-else:
-    DEVICE = -1
-    YOLO_DEVICE = "cpu"
-    TORCH_DTYPE = torch.float32
-    print("CUDA недоступна, используется CPU")
-
-# ==============================
-# Загрузка моделей
-# ==============================
-
-face_model = YOLO(FACE_MODEL_PATH)
-
-emotion_classifier = pipeline(
-    "image-classification",
-    model="trpakov/vit-face-expression",
-    device=DEVICE,
-    dtype=TORCH_DTYPE,
-)
-
-# ==============================
-# Кэш последних эмоций
-# ==============================
-
-last_results = {}
-
-# ==============================
-# Классификация эмоции
-# ==============================
-
-def classify_emotion(face_bgr):
-    face_rgb = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB)
-
-    predictions = emotion_classifier(face_rgb)
-    best = predictions[0]
-
-    emotion = best["label"]
-    confidence = float(best["score"])
-
-    if confidence < EMOTION_CONF_THRESHOLD:
-        emotion = "unknown"
-
-    return emotion, confidence
-
-# ==============================
-# Отрисовка
-# ==============================
-
-def draw_result(frame, bbox, track_id, emotion, confidence):
-    x1, y1, x2, y2 = bbox
-
-    color = (0, 255, 0)
-
-    if emotion == "unknown":
-        color = (0, 165, 255)
-    elif emotion == "happy":
-        color = (0, 255, 255)
-    elif emotion == "sad":
-        color = (255, 0, 0)
-    elif emotion == "angry":
-        color = (0, 0, 255)
+    color = EMOTION_COLORS.get(det.emotion, DEFAULT_COLOR)
 
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-    label = f"ID {track_id} | {emotion} {confidence:.2f}"
-
+    label = f"ID {det.track_id} | {det.emotion.value} {det.emotion_confidence:.2f}"
     cv2.putText(
         frame,
         label,
@@ -106,130 +51,80 @@ def draw_result(frame, bbox, track_id, emotion, confidence):
         cv2.LINE_AA,
     )
 
-# ==============================
-# Основной цикл
-# ==============================
 
-def main():
-    cap = cv2.VideoCapture(VIDEO_SOURCE)
+class VideoApplication:
+    """Приложение работает только со стандартом (FrameResult), а не с моделями."""
 
-    if not cap.isOpened():
-        raise RuntimeError(f"Не удалось открыть источник: {VIDEO_SOURCE}")
+    def __init__(self, model: BaseFaceEmotionModel):
+        self.model = model
 
-    frame_id = 0
+    def process_video(self, video_source: str) -> None:
+        cap = cv2.VideoCapture(video_source)
 
-    while True:
-        ret, frame = cap.read()
+        if not cap.isOpened():
+            raise RuntimeError(f"Не удалось открыть источник: {video_source}")
 
-        if not ret:
-            print("Видеопоток завершён или кадр не получен")
-            break
+        frame_id = 0
 
-        frame_id += 1
-        loop_start = time.perf_counter()
+        try:
+            while True:
+                ret, frame = cap.read()
 
-        # Уменьшаем кадр перед YOLO
-        small = cv2.resize(
-            frame,
-            None,
-            fx=FRAME_SCALE,
-            fy=FRAME_SCALE,
-            interpolation=cv2.INTER_LINEAR,
-        )
+                if not ret:
+                    print("Видеопоток завершён или кадр не получен")
+                    break
 
-        # Детекция и трекинг на GPU
-        results = face_model.track(
-            small,
-            persist=True,
-            tracker="configs/bytetrack.yaml",
-            conf=CONF_THRESHOLD,
-            imgsz=YOLO_IMGSZ,
-            device=YOLO_DEVICE,
-            verbose=False,
-        )
+                frame_id += 1
+                loop_start = time.perf_counter()
 
-        result = results[0]
-        boxes = result.boxes
+                # Стандартный вызов модели через контракт
+                result: FrameResult = self.model.predict(frame_id, frame)
 
-        if boxes is not None and boxes.id is not None:
-            track_ids = boxes.id.int().tolist()
-            confidences = boxes.conf.tolist()
-            bboxes = boxes.xyxy.int().tolist()
-
-            for track_id, face_conf, raw_bbox in zip(
-                track_ids, confidences, bboxes
-            ):
-                # Возвращаем координаты к исходному разрешению
-                x1, y1, x2, y2 = raw_bbox
-
-                x1 = int(x1 / FRAME_SCALE)
-                y1 = int(y1 / FRAME_SCALE)
-                x2 = int(x2 / FRAME_SCALE)
-                y2 = int(y2 / FRAME_SCALE)
-
-                h, w = frame.shape[:2]
-
-                x1 = max(0, x1)
-                y1 = max(0, y1)
-                x2 = min(w, x2)
-                y2 = min(h, y2)
-
-                if x2 <= x1 or y2 <= y1:
-                    continue
-
-                # Эмоцию считаем не каждый кадр
-                if frame_id % ANALYZE_EVERY_N_FRAMES == 0:
-                    face_crop = frame[y1:y2, x1:x2]
-
-                    emotion_start = time.perf_counter()
-                    emotion, emotion_conf = classify_emotion(face_crop)
-                    emotion_time = time.perf_counter() - emotion_start
-
-                    last_results[track_id] = (emotion, emotion_conf)
-                else:
-                    emotion, emotion_conf = last_results.get(
-                        track_id,
-                        ("unknown", 0.0),
+                # Приложение работает со стандартом
+                for det in result.detections:
+                    draw_result(frame, det)
+                    print(
+                        {
+                            "frame_id": result.frame_id,
+                            "track_id": det.track_id,
+                            "face_conf": round(det.face_confidence, 3),
+                            "bbox": [
+                                det.bbox.x_min,
+                                det.bbox.y_min,
+                                det.bbox.x_max,
+                                det.bbox.y_max,
+                            ],
+                            "emotion": det.emotion.value,
+                            "emotion_conf": round(det.emotion_confidence, 3),
+                        }
                     )
 
-                draw_result(
+                fps = 1.0 / max(time.perf_counter() - loop_start, 1e-6)
+
+                cv2.putText(
                     frame,
-                    (x1, y1, x2, y2),
-                    track_id,
-                    emotion,
-                    emotion_conf,
+                    f"FPS: {fps:.1f}",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (255, 255, 255),
+                    2,
                 )
 
-                print(
-                    {
-                        "frame_id": frame_id,
-                        "track_id": track_id,
-                        "face_conf": round(face_conf, 3),
-                        "bbox": [x1, y1, x2, y2],
-                        "emotion": emotion,
-                        "emotion_conf": round(emotion_conf, 3),
-                    }
-                )
+                cv2.imshow("Face emotion recognition (CUDA)", frame)
 
-        fps = 1.0 / max(time.perf_counter() - loop_start, 1e-6)
+                if cv2.waitKey(1) & 0xFF == 27:  # ESC
+                    break
+        finally:
+            cap.release()
+            cv2.destroyAllWindows()
 
-        cv2.putText(
-            frame,
-            f"FPS: {fps:.1f}",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2,
-        )
 
-        cv2.imshow("Face emotion recognition (CUDA)", frame)
-
-        if cv2.waitKey(1) & 0xFF == 27:
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
+def main() -> None:
+    # DI: сюда можно подставить любую реализацию контракта
+    model = CurrentYoloVitModel()
+    app = VideoApplication(model=model)
+    app.process_video(VIDEO_SOURCE)
 
 
 if __name__ == "__main__":
