@@ -60,9 +60,6 @@ class FaceDetection(BaseModel):
 class FrameResult(BaseModel):
     """Результат обработки одного кадра — единица обмена между моделью и приложением."""
 
-    contract_version: Optional[int] = Field(
-        default=1, description="Версия контракта (для будущего V2: возраст/очки и т.п.)"
-    )
     frame_id: int = Field(ge=0, description="Порядковый номер кадра")
     detections: List[FaceDetection] = Field(default_factory=list)
 
@@ -75,10 +72,6 @@ class BaseFaceEmotionModel(ABC):
     Любая новая модель (YOLO+ViT, MediaPipe, другая нейросеть) обязана
     реализовать predict() и возвращать строго валидный FrameResult.
     """
-
-    @abstractmethod
-    def __init__(self) -> None:
-        pass
 
     @abstractmethod
     def predict(self, frame: np.ndarray) -> FrameResult:

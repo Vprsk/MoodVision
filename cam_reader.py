@@ -29,21 +29,21 @@ class CameraReader:
             raise RuntimeError(f"Не удалось открыть источник: {self.source}")
 
     def _cap_is_open(self) -> bool:
-        """Проверяет, открыт ли видеопоток."""
+        """Проверяет, открыт ли видеопоток"""
         return self._cap is not None and self._cap.isOpened()
 
     def _close_cap(self) -> None:
-        """Закрывает поток и освобождает ресурсы."""
+        """Закрывает поток и освобождает ресурсы"""
         if self._cap is not None:
             self._cap.release()
             self._cap = None
 
     def preprocess(self, frame: NDArray[np.uint8]) -> NDArray[np.uint8]:
-        """Подготавливает кадр при необходимости."""
+        """Подготавливает кадр при необходимости"""
         return frame
 
     def get_frame(self) -> NDArray[np.uint8] | None:
-        """Возвращает один кадр или None, если поток закончился."""
+        """Возвращает один кадр или None, если поток закончился"""
         self._open_cap()
 
         ok, frame = self._cap.read()
@@ -53,7 +53,7 @@ class CameraReader:
         return self.preprocess(frame)
 
     def get_frames(self) -> Iterator[tuple[int, NDArray[np.uint8]]]:
-        """Генератор: возвращает пары (номер кадра, кадр)."""
+        """Генератор: возвращает пары (номер кадра, кадр)"""
         frame_id = 0
 
         try:

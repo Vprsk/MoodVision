@@ -9,7 +9,7 @@ from mood_class import HuggingFaceEmotionClassifier
 
 
 class MoodVision(BaseFaceEmotionModel):
-    """Пайплайн: детекция лиц YOLO -> классификация эмоций."""
+    """Пайплайн: детекция лиц YOLO -> классификация эмоций"""
 
     def __init__(
         self,
@@ -17,19 +17,22 @@ class MoodVision(BaseFaceEmotionModel):
         emotion_model_path: str = "trpakov/vit-face-expression",
         face_conf: float = 0.3,
         emotion_conf: float = 0.5,
-        device: str | int = 0,
+        yolo_device: str | int = 0,
+        hf_device: str | int = 0,
         tracker: str = "trackers/tracktrack.yaml",
+        face_verbose: bool = False,
     ) -> None:
         self.face_detector = YoloFaceDetector(
             model_path=face_model_path,
             conf=face_conf,
-            device=device,
+            device=yolo_device,
             tracker=tracker,
+            verbose=face_verbose
         )
 
         self.emotion_classifier = HuggingFaceEmotionClassifier(
             model_path=emotion_model_path,
-            device=0,
+            device=hf_device,
         )
 
     def predict(
@@ -37,7 +40,7 @@ class MoodVision(BaseFaceEmotionModel):
         frame_id: int,
         frame: NDArray[np.uint8],
     ) -> FrameResult:
-        """Детектирует лица, определяет эмоции и формирует FrameResult."""
+        """Детектирует лица, определяет эмоции и формирует FrameResult"""
         faces = self._detect_faces(frame)
         faces = self._classify_emotions(frame, faces)
 
@@ -47,7 +50,7 @@ class MoodVision(BaseFaceEmotionModel):
         )
 
     def _detect_faces(self, frame: NDArray[np.uint8]) -> list[FaceDetection]:
-        """Находит лица в кадре."""
+        """Находит лица в кадре"""
         return self.face_detector.detect(frame)
 
     def _classify_emotions(
@@ -55,7 +58,7 @@ class MoodVision(BaseFaceEmotionModel):
         frame: NDArray[np.uint8],
         faces: list[FaceDetection],
     ) -> list[FaceDetection]:
-        """Определяет эмоцию для каждого найденного лица."""
+        """Определяет эмоцию для каждого найденного лица"""
         classified_faces: list[FaceDetection] = []
 
         for face in faces:
@@ -81,3 +84,11 @@ class MoodVision(BaseFaceEmotionModel):
             frame_id=frame_id,
             detections=faces,
         )
+
+
+if __name__ == '__main__':
+    from cam_reader import CameraReader
+    cam = CameraReader(source='test.mp4')
+    frame = cam.get_frame()
+    model = MoodVision()
+    print(model.predict(1, frame))

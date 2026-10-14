@@ -10,15 +10,15 @@ from contracts.schemas import BoundingBox, FaceDetection
 
 
 class YoloFaceDetector:
-    """Детектор и трекер лиц на основе YOLO."""
+    """Детектор и трекер лиц на основе YOLO"""
 
     def __init__(
         self,
         model_path: str | Path,
-        conf: float = 0.3,
-        verbose: bool = False,
-        device: str | int = 0,
-        tracker: str | Path = "trackers/tracktrack.yaml",
+        conf: float,
+        verbose: bool,
+        device: str | int,
+        tracker: str | Path,
     ) -> None:
         self.model: YOLO = YOLO(model_path)
         self.conf: float = conf
@@ -27,34 +27,39 @@ class YoloFaceDetector:
         self.tracker: str | Path = tracker
 
     def _preprocess(self, frame: NDArray[np.uint8]) -> NDArray[np.uint8]:
-        """Подготавливает кадр к инференсу."""
+        """Подготавливает кадр к инференсу"""
         if frame is None or frame.size == 0:
             raise ValueError("Получен пустой кадр")
 
         return frame
 
     def _infer(self, frame: NDArray[np.uint8]) -> Results | None:
-        """Запускает трекинг для одного кадра и возвращает первый Result."""
-        results: Any = self.model.track(
-            frame,
-            persist=True,
-            tracker=self.tracker,
-            conf=self.conf,
-            verbose=self.verbose,
-            device=self.device,
-            stream=True,
-        )
+        """Запускает трекинг для одного кадра и возвращает первый Result"""
+        try:
+            results = self.model.track(
+                frame,
+                persist=True,
+                tracker=self.tracker,
+                conf=self.conf,
+                verbose=self.verbose,
+                device=self.device,
+                stream=True,
+            )
+        except Exception as e:
+            print(f'Возникло исключение при попытке инференса YOLO модели: {e}')
 
         return next(results, None)
 
     def _postprocess(self, result: Results | None) -> list[FaceDetection]:
-        """Преобразует Result YOLO в список FaceDetection."""
+        """Преобразует Result YOLO в список FaceDetection"""
         if result is None or result.boxes is None:
             return []
-
+        
+        # Пул найденых лиц
         tracked_faces: list[FaceDetection] = []
         boxes = result.boxes
 
+        # Если track_id не выдали - оставляем None
         track_ids: list[int | None] = (
             boxes.id.tolist()
             if boxes.id is not None
@@ -68,6 +73,7 @@ class YoloFaceDetector:
         ):
             x1, y1, x2, y2 = map(int, xyxy.tolist())
 
+            # Создаем объект FaceDetection и добавляем его в пул
             tracked_faces.append(
                 FaceDetection(
                     track_id=int(track_id) if track_id is not None else None,
@@ -86,7 +92,7 @@ class YoloFaceDetector:
         return tracked_faces
 
     def detect(self, frame: NDArray[np.uint8]) -> list[FaceDetection]:
-        """Выполняет полный пайплайн детекции лиц."""
+        """Выполняет полный пайплайн детекции лиц"""
         prepared_frame = self._preprocess(frame)
         result = self._infer(prepared_frame)
 
