@@ -4,3 +4,14 @@ test.mp4
 /.vscode
 __pycache__/
 *.pyc
+references/
+*.png
+
+# Сохранённые видеопотоки (могут содержать RTSP/HTTP с учётными данными)
+streams.json
+
+# Сохранённые группы потоков
+groups.json
+
+# Пользовательские пресеты обработки
+presets.json

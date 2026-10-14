@@ -69,3 +69,9 @@ pydantic==2.14.1
 pydantic-core==2.50.1
 annotated-types==0.8.0
 typing-inspection==0.4.4
+
+# GUI (десктопное приложение EmoSense). LGPL, ставится в тот же venv.
+PySide6==6.12.0
+PySide6-Addons==6.12.0
+PySide6-Essentials==6.12.0
+shiboken6==6.12.0
