@@ -1,0 +1,79 @@
+"""Персистентность: сохранение/загрузка списка видеопотоков.
+
+Потоки сохраняются в JSON-файл (по умолчанию — streams.json в корне
+проекта) при закрытии приложения и восстанавливаются при старте. Файл
+содержит RTSP/HTTP-адреса, которые могут включать учётные данные, поэтому
+он добавлен в .gitignore и не должен коммититься.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from pathlib import Path
+from typing import List
+
+from app.core.stream_config import StreamConfig
+
+# Корень проекта = два уровня выше этого файла (app/core/persistence.py).
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DEFAULT_STORE_PATH = PROJECT_ROOT / "streams.json"
+
+
+def _resolve_path(path: str | os.PathLike | None) -> Path:
+    return Path(path) if path is not None else DEFAULT_STORE_PATH
+
+
+def save_streams(
+    configs: List[StreamConfig], path: str | os.PathLike | None = None
+) -> Path:
+    """Сохраняет список конфигов потоков в JSON (атомарно).
+
+    Атомарная запись через временный файл + os.replace защищает от
+    повреждённого файла, если приложение закроют во время сохранения.
+    """
+    target = _resolve_path(path)
+    payload = {"version": 1, "streams": [c.to_dict() for c in configs]}
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Пишем во временный файл в той же директории, затем атомарно заменяем.
+    fd, tmp = tempfile.mkstemp(
+        dir=str(target.parent), prefix=".streams-", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, target)
+    finally:
+        # Если replace не удался — уберём временный файл.
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return target
+
+
+def load_streams(path: str | os.PathLike | None = None) -> List[StreamConfig]:
+    """Загружает конфиги потоков из JSON. При отсутствии/ошибке — []."""
+    target = _resolve_path(path)
+    if not target.exists():
+        return []
+    try:
+        with open(target, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    raw_streams = data.get("streams", []) if isinstance(data, dict) else []
+    configs: List[StreamConfig] = []
+    for item in raw_streams:
+        try:
+            config = StreamConfig.from_dict(item)
+        except Exception:  # noqa: BLE001 — пропускаем битые записи
+            continue
+        # Минимальная валидация: без источника поток бесполезен.
+        if config.source.strip():
+            configs.append(config)
+    return configs
