@@ -4,14 +4,89 @@
 Вся «грязь» конкретных моделей (свои bbox, метки, confidence) изолирована здесь.
 """
 
+import threading
+from typing import Any
+
 import cv2
 import numpy as np
 import torch
-from transformers import pipeline
+from transformers import (
+    AutoImageProcessor,
+    AutoModelForImageClassification,
+    pipeline,
+)
 from ultralytics import YOLO
 
 from contracts.base import BaseFaceEmotionModel
 from contracts.schemas import BoundingBox, Emotion, FaceDetection, FrameResult
+
+# Модель эмоций в Hugging Face Hub (ViT, 7 базовых эмоций).
+EMOTION_MODEL_ID = "trpakov/vit-face-expression"
+
+# Процессный кэш собранного пайплайна эмоций.
+# VideoWorker создаёт модель при КАЖДОМ старте потока, поэтому без кэша ViT
+# перечитывался бы заново на каждый запуск. Ключ — (model_id, device, dtype),
+# чтобы не делить пайплайн между CUDA/CPU и float16/float32.
+_EMOTION_PIPELINE_CACHE: dict[tuple[str, int, str], Any] = {}
+# Лок: защита от параллельной двойной загрузки (несколько воркеров стартуют
+# одновременно). Сам инференс по общему пайплайну потокобезопасен: forward
+# ничего не мутирует, image_processor — stateless.
+_EMOTION_PIPELINE_LOCK = threading.Lock()
+
+
+def _build_emotion_pipeline(
+    model_id: str,
+    device: int,
+    dtype: torch.dtype,
+    *,
+    offline: bool,
+) -> Any:
+    """Собирает image-classification пайплайн для модели эмоций.
+
+    offline=True — только локальный кэш HuggingFace (сеть не трогается);
+    offline=False — разрешена разовая первичная загрузка с HF Hub.
+
+    Компоненты грузятся явно через from_pretrained, а не внутри pipeline():
+    transformers 5.x не принимает local_files_only в pipeline() — kwargs
+    уходит в _sanitize_parameters и даёт TypeError.
+    """
+    load_kwargs = {"local_files_only": offline}
+    hf_model = AutoModelForImageClassification.from_pretrained(
+        model_id, dtype=dtype, **load_kwargs
+    )
+    image_processor = AutoImageProcessor.from_pretrained(model_id, **load_kwargs)
+    return pipeline(
+        "image-classification",
+        model=hf_model,
+        image_processor=image_processor,
+        device=device,
+        dtype=dtype,
+    )
+
+
+def _get_emotion_pipeline(model_id: str, device: int, dtype: torch.dtype) -> Any:
+    """Возвращает общий для процесса пайплайн классификации эмоций.
+
+    Первый вызов загружает модель: сначала строго из локального кэша HF,
+    и только если весов ещё нет — один раз с HF Hub. Все последующие вызовы
+    и остальные экземпляры CurrentYoloVitModel получают тот же объект,
+    поэтому модель не перезагружается ни при старте нового потока,
+    ни (после первой загрузки) при повторных запусках приложения.
+    """
+    key = (model_id, int(device), str(dtype))
+    with _EMOTION_PIPELINE_LOCK:
+        cached = _EMOTION_PIPELINE_CACHE.get(key)
+        if cached is not None:
+            return cached
+        try:
+            clf = _build_emotion_pipeline(model_id, device, dtype, offline=True)
+            print(f"Эмоции (HF): {model_id} — из локального кэша, без обращения к HF")
+        except Exception:
+            # В кэше ещё нет — разовая загрузка с HF (следующие запуски её пропустят).
+            clf = _build_emotion_pipeline(model_id, device, dtype, offline=False)
+            print(f"Эмоции (HF): {model_id} — первая загрузка с Hugging Face")
+        _EMOTION_PIPELINE_CACHE[key] = clf
+        return clf
 
 
 class CurrentYoloVitModel(BaseFaceEmotionModel):
@@ -48,12 +123,12 @@ class CurrentYoloVitModel(BaseFaceEmotionModel):
         self.frame_scale = frame_scale
 
         # --- Модели ---
+        # YOLO — свой экземпляр на каждый объект (ByteTrack хранит треки).
         self.face_model = YOLO(model_path)
-        self.emotion_classifier = pipeline(
-            "image-classification",
-            model="trpakov/vit-face-expression",
-            device=self.device,
-            dtype=self.torch_dtype,
+        # ViT-классификатор эмоций — общий процессный кэш: модель НЕ
+        # перечитывается с HF при каждом создании экземпляра (старте потока).
+        self.emotion_classifier = _get_emotion_pipeline(
+            EMOTION_MODEL_ID, self.device, self.torch_dtype
         )
 
         # --- Кэш эмоций по track_id: пересчитываем каждые N кадров ---
