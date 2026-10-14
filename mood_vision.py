@@ -84,11 +84,3 @@ class MoodVision(BaseFaceEmotionModel):
             frame_id=frame_id,
             detections=faces,
         )
-
-
-if __name__ == '__main__':
-    from cam_reader import CameraReader
-    cam = CameraReader(source='test.mp4')
-    frame = cam.get_frame()
-    model = MoodVision()
-    print(model.predict(1, frame))
