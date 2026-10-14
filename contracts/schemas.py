@@ -76,3 +76,8 @@ class BaseFaceEmotionModel(ABC):
     @abstractmethod
     def predict(self, frame: np.ndarray) -> FrameResult:
         """Принимает номер кадра и сам кадр, возвращает результат в формате FrameResult."""
+    contract_version: int = Field(
+        default=1, description="Версия контракта (для будущего V2: возраст/очки и т.п.)"
+    )
+    frame_id: int = Field(ge=0, description="Порядковый номер кадра")
+    detections: List[FaceDetection] = Field(default_factory=list)
