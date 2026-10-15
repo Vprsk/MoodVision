@@ -7,8 +7,6 @@ from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
-from abc import ABC, abstractmethod
-import numpy as np
 
 
 
@@ -60,24 +58,5 @@ class FaceDetection(BaseModel):
 class FrameResult(BaseModel):
     """Результат обработки одного кадра — единица обмена между моделью и приложением."""
 
-    frame_id: int = Field(ge=0, description="Порядковый номер кадра")
-    detections: List[FaceDetection] = Field(default_factory=list)
-
-
-"""Контракт для всех моделей распознавания лиц и эмоций."""
-
-class BaseFaceEmotionModel(ABC):
-    """Базовый класс (контракт) для всех моделей распознавания.
-
-    Любая новая модель (YOLO+ViT, MediaPipe, другая нейросеть) обязана
-    реализовать predict() и возвращать строго валидный FrameResult.
-    """
-
-    @abstractmethod
-    def predict(self, frame: np.ndarray) -> FrameResult:
-        """Принимает номер кадра и сам кадр, возвращает результат в формате FrameResult."""
-    contract_version: int = Field(
-        default=1, description="Версия контракта (для будущего V2: возраст/очки и т.п.)"
-    )
     frame_id: int = Field(ge=0, description="Порядковый номер кадра")
     detections: List[FaceDetection] = Field(default_factory=list)

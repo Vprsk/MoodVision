@@ -1,7 +1,7 @@
 import numpy as np
 from numpy.typing import NDArray
 
-from contracts.schemas import BaseFaceEmotionModel
+from contracts.base import BaseFaceEmotionModel
 from contracts.schemas import FaceDetection, FrameResult
 
 from face_detect import YoloFaceDetector
