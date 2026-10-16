@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from app import theme as T
 from app.core.group_manager import DEFAULT_GROUP, GroupManager
+from app.core.logging import get_logger
 from app.core.stream_config import (
     STATUS_INCIDENT,
     STATUS_NORMAL,
@@ -41,6 +42,8 @@ from app.ui.icons import make_plus_icon
 from app.ui.widgets.badges import Badge
 from app.ui.widgets.video_player import VideoPlayer
 from app.ui.widgets.visitors_panel import VisitorsPanel
+
+logger = get_logger("streams_page")
 
 # Как часто (в секундах) перерисовывать тяжёлую панель «Посетители».
 # Сигнал треков приходит на каждом кадре, но панель обновляем реже.
@@ -445,9 +448,9 @@ class StreamsPage(QWidget):
         if not ok or not new_name or new_name == name:
             return
         if self.group_manager.exists(new_name):
-            QMessageBox.warning(
-                self, "Группа", f"Группа «{new_name}» уже существует."
-            )
+            msg = f"Группа «{new_name}» уже существует."
+            QMessageBox.warning(self, "Группа", msg)
+            logger.warning("Группа «%s» уже существует", new_name)
             return
         self.group_manager.rename(name, new_name)
         # Переносим все потоки старой группы в новую.

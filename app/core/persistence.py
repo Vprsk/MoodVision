@@ -14,11 +14,17 @@ import tempfile
 from pathlib import Path
 from typing import List
 
+from app.core.logging import get_logger
 from app.core.stream_config import StreamConfig
+
+logger = get_logger("persistence")
 
 # Корень проекта = два уровня выше этого файла (app/core/persistence.py).
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DEFAULT_STORE_PATH = PROJECT_ROOT / "streams.json"
+# Папка для runtime-состояния приложения (streams.json, groups.json и т.п.),
+# чтобы не захламлять корень проекта сохранениями.
+STATE_DIR = PROJECT_ROOT / "state"
+DEFAULT_STORE_PATH = STATE_DIR / "streams.json"
 
 
 def _resolve_path(path: str | os.PathLike | None) -> Path:
@@ -45,6 +51,10 @@ def save_streams(
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         os.replace(tmp, target)
+        logger.debug("Сохранено %d потоков в %s", len(configs), target)
+    except OSError as exc:  # noqa: BLE001
+        logger.error("Не удалось сохранить потоки в %s: %s", target, exc)
+        raise
     finally:
         # Если replace не удался — уберём временный файл.
         if os.path.exists(tmp):
@@ -59,11 +69,13 @@ def load_streams(path: str | os.PathLike | None = None) -> List[StreamConfig]:
     """Загружает конфиги потоков из JSON. При отсутствии/ошибке — []."""
     target = _resolve_path(path)
     if not target.exists():
+        logger.debug("Файл потоков не найден: %s", target)
         return []
     try:
         with open(target, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:  # noqa: BLE001
+        logger.error("Не удалось загрузить потоки из %s: %s", target, exc)
         return []
 
     raw_streams = data.get("streams", []) if isinstance(data, dict) else []

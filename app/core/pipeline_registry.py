@@ -73,7 +73,7 @@ def _register_builtin_pipelines() -> None:
     """
 
     def _yolo_vit_factory(**params: Any) -> BaseFaceEmotionModel:
-        from models import CurrentYoloVitModel
+        from mood_base.models import CurrentYoloVitModel
 
         return CurrentYoloVitModel(**params)
 
@@ -83,7 +83,7 @@ def _register_builtin_pipelines() -> None:
             label="YOLOv8-face + ViT (текущий)",
             factory=_yolo_vit_factory,
             defaults={
-                "model_path": "model/yolov8n-face.pt",
+                "model_path": "mood_base/model/yolov8n-face.pt",
                 "tracker_config": "configs/bytetrack.yaml",
                 "conf_threshold": 0.45,
                 "emotion_conf_threshold": 0.35,

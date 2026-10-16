@@ -21,8 +21,8 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 import torch
 
-from models import CurrentYoloVitModel
-from models.current_yolo_vit import (
+from mood_base.models import CurrentYoloVitModel
+from mood_base.models.current_yolo_vit import (
     EMOTION_MODEL_ID,
     _EMOTION_PIPELINE_CACHE,
     _get_emotion_pipeline,

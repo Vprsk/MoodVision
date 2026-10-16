@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from contracts import BaseFaceEmotionModel, Emotion, FaceDetection, FrameResult
-from models import CurrentYoloVitModel
+from mood_base.models import CurrentYoloVitModel
 
 VIDEO_SOURCE = "data/test.mp4"
 

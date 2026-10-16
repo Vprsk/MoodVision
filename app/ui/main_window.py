@@ -15,11 +15,14 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.group_manager import GroupManager
+from app.core.logging import get_logger
 from app.core.persistence import load_streams, save_streams
 from app.core.preset_manager import PresetManager
 from app.core.stream_manager import StreamManager
 from app.ui.streams_page import StreamsPage
 from app.ui.top_bar import TopBar
+
+logger = get_logger("main_window")
 
 
 class MainWindow(QMainWindow):
@@ -93,7 +96,7 @@ class MainWindow(QMainWindow):
         try:
             self.presets.save()
         except Exception as exc:  # noqa: BLE001 — не роняем закрытие из-за записи
-            print(f"Не удалось сохранить пресеты: {exc}")
+            logger.error("Не удалось сохранить пресеты: %s", exc)
         self.manager.stop_all()
         super().closeEvent(event)
 
@@ -111,14 +114,14 @@ class MainWindow(QMainWindow):
             save_streams(configs)
             self.groups.save()
         except Exception as exc:  # noqa: BLE001 — не роняем закрытие из-за записи
-            print(f"Не удалось сохранить состояние: {exc}")
+            logger.error("Не удалось сохранить состояние: %s", exc)
 
     def _load_streams(self) -> None:
         """Восстанавливает потоки из файла и запускает ранее активные."""
         try:
             configs = load_streams()
         except Exception as exc:  # noqa: BLE001
-            print(f"Не удалось загрузить потоки: {exc}")
+            logger.error("Не удалось загрузить потоки: %s", exc)
             return
         for config in configs:
             # Регистрируем группу потока, чтобы она попалась в список групп.

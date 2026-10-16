@@ -13,9 +13,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from app.core.persistence import PROJECT_ROOT
+from app.core.logging import get_logger
+from app.core.persistence import PROJECT_ROOT, STATE_DIR
 
-DEFAULT_GROUPS_PATH = PROJECT_ROOT / "groups.json"
+logger = get_logger("group_manager")
+
+DEFAULT_GROUPS_PATH = STATE_DIR / "groups.json"
 DEFAULT_GROUP = "Без группы"
 
 
@@ -42,11 +45,13 @@ class GroupManager:
         """Загружает группы из JSON. При отсутствии/ошибке — пустой список."""
         self._groups = {}
         if not self._path.exists():
+            logger.debug("Файл групп не найден: %s", self._path)
             return
         try:
             with open(self._path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:  # noqa: BLE001
+            logger.error("Не удалось загрузить группы из %s: %s", self._path, exc)
             return
         for item in data.get("groups", []):
             try:
@@ -74,6 +79,10 @@ class GroupManager:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
             os.replace(tmp, self._path)
+            logger.debug("Сохранено %d групп в %s", len(payload["groups"]), self._path)
+        except OSError as exc:  # noqa: BLE001
+            logger.error("Не удалось сохранить группы в %s: %s", self._path, exc)
+            raise
         finally:
             if os.path.exists(tmp):
                 try:

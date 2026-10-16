@@ -17,8 +17,11 @@ from transformers import (
 )
 from ultralytics import YOLO
 
+from app.core.logging import get_logger
 from contracts.base import BaseFaceEmotionModel
 from contracts.schemas import BoundingBox, Emotion, FaceDetection, FrameResult
+
+logger = get_logger("current_yolo_vit")
 
 # Модель эмоций в Hugging Face Hub (ViT, 7 базовых эмоций).
 EMOTION_MODEL_ID = "trpakov/vit-face-expression"
@@ -80,11 +83,11 @@ def _get_emotion_pipeline(model_id: str, device: int, dtype: torch.dtype) -> Any
             return cached
         try:
             clf = _build_emotion_pipeline(model_id, device, dtype, offline=True)
-            print(f"Эмоции (HF): {model_id} — из локального кэша, без обращения к HF")
+            logger.info("Эмоции (HF): %s — из локального кэша, без обращения к HF", model_id)
         except Exception:
             # В кэше ещё нет — разовая загрузка с HF (следующие запуски её пропустят).
             clf = _build_emotion_pipeline(model_id, device, dtype, offline=False)
-            print(f"Эмоции (HF): {model_id} — первая загрузка с Hugging Face")
+            logger.info("Эмоции (HF): %s — первая загрузка с Hugging Face", model_id)
         _EMOTION_PIPELINE_CACHE[key] = clf
         return clf
 
@@ -94,7 +97,7 @@ class CurrentYoloVitModel(BaseFaceEmotionModel):
 
     def __init__(
         self,
-        model_path: str = "model/yolov8n-face.pt",
+        model_path: str = "mood_base/model/yolov8n-face.pt",
         tracker_config: str = "configs/bytetrack.yaml",
         conf_threshold: float = 0.45,
         emotion_conf_threshold: float = 0.35,
@@ -107,12 +110,12 @@ class CurrentYoloVitModel(BaseFaceEmotionModel):
             self.device = 0
             self.yolo_device = 0
             self.torch_dtype = torch.float16
-            print(f"CUDA доступна: {torch.cuda.get_device_name(0)}")
+            logger.info("CUDA доступна: %s", torch.cuda.get_device_name(0))
         else:
             self.device = -1
             self.yolo_device = "cpu"
             self.torch_dtype = torch.float32
-            print("CUDA недоступна, используется CPU")
+            logger.info("CUDA недоступна, используется CPU")
 
         # --- Параметры ---
         self.tracker_config = tracker_config
@@ -170,6 +173,9 @@ class CurrentYoloVitModel(BaseFaceEmotionModel):
 
         detections: list[FaceDetection] = []
 
+        # Треки, присутствующие в текущем кадре — для очистки устаревшего кэша
+        # эмоций (ByteTrack может переиспользовать track_id).
+        current_ids: set[int] = set()
         if boxes is not None and boxes.id is not None:
             track_ids = boxes.id.int().tolist()
             confidences = boxes.conf.tolist()
@@ -178,6 +184,7 @@ class CurrentYoloVitModel(BaseFaceEmotionModel):
             h, w = frame.shape[:2]
 
             for track_id, face_conf, raw_bbox in zip(track_ids, confidences, bboxes):
+                current_ids.add(track_id)
                 # Возвращаем координаты к исходному разрешению
                 x1, y1, x2, y2 = raw_bbox
                 x1 = int(x1 / self.frame_scale)
@@ -197,7 +204,16 @@ class CurrentYoloVitModel(BaseFaceEmotionModel):
                 # Эмоцию считаем не каждый кадр (кэш по track_id)
                 if frame_id % self.analyze_every_n_frames == 0:
                     face_crop = frame[y1:y2, x1:x2]
-                    emotion, emotion_conf = self._classify_emotion(face_crop)
+                    try:
+                        emotion, emotion_conf = self._classify_emotion(face_crop)
+                    except Exception as exc:  # noqa: BLE001 — не роняем поток из-за одного лица
+                        logger.warning(
+                            "Ошибка классификации эмоции для track_id=%s (поток %s): %s",
+                            track_id,
+                            getattr(self, "_stream_id", "?"),
+                            exc,
+                        )
+                        emotion, emotion_conf = "unknown", 0.0
                     self._last_results[track_id] = (emotion, emotion_conf)
                 else:
                     emotion, emotion_conf = self._last_results.get(
@@ -213,5 +229,11 @@ class CurrentYoloVitModel(BaseFaceEmotionModel):
                         emotion_confidence=float(emotion_conf),
                     )
                 )
+
+        # Удаляем из кэша эмоции треков, которых нет в текущем кадре.
+        # Без этого словарь растёт бесконечно, а при переиспользовании
+        # track_id ByteTrack покажет эмоцию предыдущего человека.
+        for stale_tid in [tid for tid in self._last_results if tid not in current_ids]:
+            del self._last_results[stale_tid]
 
         return FrameResult(frame_id=frame_id, detections=detections)

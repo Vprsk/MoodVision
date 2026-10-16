@@ -5,6 +5,7 @@
   * на КАЖДОМ кадре вызывает model.predict() контракта;
   * аннотирует кадр и отправляет его в GUI через сигнал frame_ready;
   * отправляет разбор результата (FrameResult) через сигнал result_ready;
+  * переподключается с backoff при обрыве live-источника (RTSP/HTTP);
   * корректно освобождает ресурсы при остановке.
 
 Важно: модель создаётся ВНУТРИ потока (в run()), т.к. YOLO/ViT содержат
@@ -23,12 +24,25 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from app.core.annotate import draw_detection, draw_fps
+from app.core.logging import get_logger
 from app.core.stream_config import StreamConfig
 from contracts.base import BaseFaceEmotionModel
 from contracts.schemas import FrameResult
 
+logger = get_logger("video_worker")
+
 # Сколько последних кадров берём для оценки мгновенного FPS.
 _FPS_WINDOW = 30
+
+# Параметры переподключения live-источников после обрыва (см. _reconnect).
+_RECONNECT_BASE_DELAY_S = 1.0    # пауза перед 2-й попыткой, дальше ×2
+_RECONNECT_MAX_DELAY_S = 10.0    # потолок экспоненциального backoff
+_RECONNECT_STEP_MS = 100         # шаг сна — чтобы быстро реагировать на stop()
+
+# Таймауты сетевых источников (мс): не даём зависшему RTSP-соединению
+# блокировать read()/stop() бесконечно (бэкенд FFmpeg, OpenCV ≥ 4.5).
+_OPEN_TIMEOUT_MS = 5000
+_READ_TIMEOUT_MS = 5000
 
 
 class VideoWorker(QThread):
@@ -38,7 +52,8 @@ class VideoWorker(QThread):
       * приостанавливать/возобновлять показ (пауза);
       * перематыватьseek на ±N секунд (только для seekable-источников —
         видеофайлов; у RTSP/веб-камеры перемотка невозможна);
-      * сообщать позицию, длительность и FPS источника для прогресс-бара.
+      * сообщать позицию, длительность и FPS источника для прогресс-бара;
+      * переподключаться с экспоненциальным backoff при обрыве live-потока.
 
     Перемотка реализована через cv2.CAP_PROP_POS_FRAMES и применяется в
     рабочем потоке (в цикле run), т.к. трогать VideoCapture безопасно только
@@ -137,14 +152,50 @@ class VideoWorker(QThread):
             return 0.0
         return (len(self._frame_times) - 1) / span
 
+    def _open_capture(self) -> cv2.VideoCapture:
+        """Открывает источник видеопотока.
+
+        Для сетевых live-источников (RTSP/HTTP/RTMP) задаёт таймауты
+        соединения и чтения: зависший поток иначе может навсегда
+        заблокировать read(), из-за чего stop() не завершит воркер.
+        Если бэкенд OpenCV не принял параметры — открываем без таймаутов
+        (поведение как раньше).
+        """
+        source = self._config.capture_source
+        is_network = source.lower().startswith(
+            ("rtsp://", "http://", "https://", "rtmp://")
+        )
+        open_prop = getattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC", None)
+        read_prop = getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None)
+        if is_network and open_prop is not None and read_prop is not None:
+            cap = cv2.VideoCapture(
+                source,
+                cv2.CAP_ANY,
+                [open_prop, _OPEN_TIMEOUT_MS, read_prop, _READ_TIMEOUT_MS],
+            )
+            if cap.isOpened():
+                logger.info("Источник открыт: %s", source)
+                return cap
+            cap.release()
+            logger.warning("Не удалось открыть сетевой источник с таймаутами: %s", source)
+        cap = cv2.VideoCapture(source)
+        if cap.isOpened():
+            logger.info("Источник открыт: %s", source)
+        else:
+            logger.error("Не удалось открыть источник: %s", source)
+        return cap
+
     def run(self) -> None:  # noqa: D102 (Qt-переопределение)
         self._running = True
+        source = self._config.capture_source
+        logger.info("Запуск воркера для потока %s (источник: %s)", self._config.stream_id, source)
         self.status_changed.emit("Подключение…")
 
         # --- Открываем источник ---
-        self._cap = cv2.VideoCapture(self._config.capture_source)
+        self._cap = self._open_capture()
         if not self._cap.isOpened():
             self.status_changed.emit("Нет сигнала")
+            logger.error("Нет сигнала от источника %s (поток %s)", source, self._config.stream_id)
             self._running = False
             return
 
@@ -156,10 +207,12 @@ class VideoWorker(QThread):
             self._model = self._build_model()
         except Exception as exc:  # noqa: BLE001 — показываем любую ошибку загрузки
             self.status_changed.emit(f"Ошибка модели: {exc}")
+            logger.error("Ошибка загрузки модели для потока %s: %s", self._config.stream_id, exc)
             self._release()
             return
 
         self.status_changed.emit("В эфире")
+        logger.info("Поток %s в эфире (модель загружена)", self._config.stream_id)
         frame_id = 0
 
         try:
@@ -180,8 +233,26 @@ class VideoWorker(QThread):
 
                 ret, frame = self._cap.read()
                 if not ret:
-                    # Для файлов это конец записи; для RTSP — обрыв.
+                    # Для файлов это конец записи. Для live-источника
+                    # (RTSP/HTTP/веб-камера) длительность неизвестна, поэтому
+                    # такой EOF — почти всегда сетевой обрыв, а не конец.
+                    if self._config.is_live and self._duration <= 0.0:
+                        logger.warning(
+                            "Потерян сигнал от live-источника %s (поток %s), пробуем переподключение…",
+                            source,
+                            self._config.stream_id,
+                        )
+                        self.status_changed.emit("Переподключение…")
+                        if self._reconnect():
+                            continue
+                        logger.error(
+                            "Переподключение к %s не удалось, поток %s остановлен",
+                            source,
+                            self._config.stream_id,
+                        )
+                        break  # stop() во время переподключения
                     self.status_changed.emit("Поток завершён")
+                    logger.info("Поток %s завершён (конец файла)", self._config.stream_id)
                     break
 
                 frame_id += 1
@@ -197,9 +268,9 @@ class VideoWorker(QThread):
                 fps = self._measure_fps()
                 draw_fps(annotated, fps)
 
-                # Отдаём кадр и результат в GUI. copy() — чтобы данные не
-                # перезаписывались на следующей итерации до отрисовки.
-                self.frame_ready.emit(annotated.copy())
+                # Отдаём кадр в GUI. annotated уже копия frame (строка выше),
+                # дополнительного copy() не требуется.
+                self.frame_ready.emit(annotated)
                 self.result_ready.emit(result)
                 self.fps_updated.emit(fps)
 
@@ -213,6 +284,7 @@ class VideoWorker(QThread):
                     self.msleep(1)
         finally:
             self._release()
+            logger.info("Воркер потока %s завершён", self._config.stream_id)
 
     def _read_media_meta(self) -> None:
         """Читает FPS и длительность источника, эмитит media_info."""
@@ -261,6 +333,52 @@ class VideoWorker(QThread):
             target = max(0.0, total_frames - 1)
         self._cap.set(cv2.CAP_PROP_POS_FRAMES, target)
         return True
+
+    def _interruptible_sleep(self, seconds: float) -> bool:
+        """Спит мелкими шагами, чтобы быстро отреагировать на stop().
+
+        Возвращает False, если поток был остановлен до конца паузы.
+        """
+        total_ms = int(seconds * 1000)
+        slept_ms = 0
+        while slept_ms < total_ms and self._running:
+            step = min(_RECONNECT_STEP_MS, total_ms - slept_ms)
+            self.msleep(step)
+            slept_ms += step
+        return self._running
+
+    def _reconnect(self) -> bool:
+        """Переподключает live-источник после обрыва чтения.
+
+        Backoff: первая попытка сразу, затем 1 c → 2 c → 4 c → 8 c → … ≤ 10 c.
+        Число попыток не ограничено, пока не пришёл stop() — кратковременный
+        обрыв сети не должен убивать камеру навсегда (до ручного перезапуска).
+
+        Возвращает True, если источник снова открыт и цикл run продолжается;
+        False — поток остановлен во время переподключения.
+        """
+        self.status_changed.emit("Обрыв потока — переподключение…")
+        attempt = 0
+        while self._running:
+            attempt += 1
+            if attempt > 1:
+                delay = min(
+                    _RECONNECT_BASE_DELAY_S * (2 ** (attempt - 2)),
+                    _RECONNECT_MAX_DELAY_S,
+                )
+                self.status_changed.emit(f"Переподключение… (попытка {attempt})")
+                if not self._interruptible_sleep(delay):
+                    break
+            if self._cap is not None:
+                self._cap.release()
+            self._cap = self._open_capture()
+            if self._cap.isOpened():
+                # FPS-окно накапливалось до обрыва — сбрасываем метрику.
+                self._frame_times.clear()
+                self._read_media_meta()
+                self.status_changed.emit("В эфире")
+                return True
+        return False
 
     def _emit_preview_frame(self) -> None:
         """Читает и показывает один кадр без инференса (для паузы+перемотка)."""

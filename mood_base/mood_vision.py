@@ -4,8 +4,8 @@ from numpy.typing import NDArray
 from contracts.schemas import BaseFaceEmotionModel
 from contracts.schemas import FaceDetection, FrameResult
 
-from face_detect import YoloFaceDetector
-from mood_class import HuggingFaceEmotionClassifier
+from mood_base.face_detect import YoloFaceDetector
+from mood_base.mood_class import HuggingFaceEmotionClassifier
 
 
 class MoodVision(BaseFaceEmotionModel):
@@ -13,7 +13,7 @@ class MoodVision(BaseFaceEmotionModel):
 
     def __init__(
         self,
-        face_model_path: str = "checkpoints/yolov8n-face.pt",
+        face_model_path: str = "mood_base/model/yolov8n-face.pt",
         emotion_model_path: str = "trpakov/vit-face-expression",
         face_conf: float = 0.3,
         emotion_conf: float = 0.5,

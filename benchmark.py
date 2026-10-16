@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from models.current_yolo_vit import CurrentYoloVitModel
+from mood_base.models.current_yolo_vit import CurrentYoloVitModel
 from contracts.schemas import Emotion
 
 DATASET_NAME = "LaurenGurgiolo/Micro_Facial_Expressions"

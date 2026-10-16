@@ -14,6 +14,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Настраиваем логирование как можно раньше — до создания QApplication и
+# импортов UI-модулей, чтобы ключевые ошибки и события попали в терминал.
+from app.core.logging import setup_logging  # noqa: E402
+
+setup_logging()
+
 from PySide6.QtWidgets import QApplication
 
 from app.ui.main_window import MainWindow

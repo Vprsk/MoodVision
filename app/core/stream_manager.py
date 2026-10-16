@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from PySide6.QtCore import QObject, Signal
 
+from app.core.logging import get_logger
 from app.core.stream_config import (
     STATUS_INCIDENT,
     STATUS_NORMAL,
@@ -27,8 +28,14 @@ from app.core.stream_config import (
 from app.core.video_worker import VideoWorker
 from contracts.schemas import FrameResult
 
+logger = get_logger("stream_manager")
+
 # Сколько секунд трек не появляется в кадре, чтобы считаться «ушёдшим».
 TRACK_TTL_SECONDS = 10.0
+
+# Сколько мс ждать завершения воркера в stop_stream. Если инференс кадра
+# дольше — воркер остаётся в _stopping_workers до фактического finished.
+STOP_WAIT_MS = 3000
 
 
 @dataclass
@@ -40,10 +47,17 @@ class StreamRuntime:
     tracks: Dict[int, ClientTrack] = field(default_factory=dict)
     last_status: str = "Выключено"
     fps: float = 0.0
+    # True, когда stop() уже запрошен, но поток ещё не завершился:
+    # воркер жив (ссылка сохранена), но для UI поток уже «выключен».
+    stopping: bool = False
 
     @property
     def is_live(self) -> bool:
-        return self.worker is not None and self.worker.isRunning()
+        return (
+            self.worker is not None
+            and self.worker.isRunning()
+            and not self.stopping
+        )
 
 
 class StreamManager(QObject):
@@ -59,6 +73,9 @@ class StreamManager(QObject):
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._runtimes: Dict[str, StreamRuntime] = {}
+        # Воркеры с отправленным stop(), но ещё не завершившиеся (wait()
+        # истёк). Сильные ссылки не дают QThread уничтожиться «в работе».
+        self._stopping_workers: Set[VideoWorker] = set()
 
     # --- Управление потоками -------------------------------------------------
 
@@ -76,6 +93,12 @@ class StreamManager(QObject):
         if runtime.is_live:
             return True
 
+        # Старый воркер мог ещё завершаться (stop с таймаутом wait()) —
+        # сохраняем ссылку до его finished, иначе QThread умрёт «в работе».
+        previous = runtime.worker
+        if previous is not None and previous.isRunning():
+            self._stopping_workers.add(previous)
+
         worker = VideoWorker(runtime.config)
         worker.frame_ready.connect(self._on_frame_ready)
         worker.result_ready.connect(
@@ -90,6 +113,8 @@ class StreamManager(QObject):
         worker.finished.connect(lambda rid=stream_id: self._on_finished(rid))
         worker.start()
         runtime.worker = worker
+        runtime.stopping = False
+        logger.info("Поток %s запущен (источник: %s)", stream_id, runtime.config.capture_source)
         return True
 
     def stop_stream(self, stream_id: str) -> None:
@@ -97,9 +122,29 @@ class StreamManager(QObject):
         runtime = self._runtimes.get(stream_id)
         if runtime is None or runtime.worker is None:
             return
-        runtime.worker.stop()
-        runtime.worker.wait(3000)
-        runtime.worker = None
+        worker = runtime.worker
+        runtime.stopping = True
+        worker.stop()
+        if worker.wait(STOP_WAIT_MS):
+            # Поток завершился за отведённое время — ссылку можно снимать:
+            # уничтожение завершённого QThread безопасно.
+            self._stopping_workers.discard(worker)
+            if runtime.worker is worker:
+                runtime.worker = None
+            runtime.stopping = False
+            logger.info("Поток %s остановлен", stream_id)
+        else:
+            # Таймаут: инференс кадра ещё выполняется. НЕ обнуляем ссылку —
+            # иначе QThread может быть уничтожен во время работы («QThread:
+            # Destroyed while thread is still running»). Сильную ссылку
+            # держим до фактического finished (снимет _on_finished);
+            # в _stopping_workers воркер переживает даже remove_stream/stop_all.
+            self._stopping_workers.add(worker)
+            logger.warning(
+                "Поток %s не успел остановиться за %s мс, вордер удерживается до finished",
+                stream_id,
+                STOP_WAIT_MS,
+            )
         runtime.last_status = "Выключено"
         runtime.fps = 0.0
         self.stream_status_changed.emit(stream_id, runtime.last_status)
@@ -113,6 +158,17 @@ class StreamManager(QObject):
         """Останавливает все потоки (при закрытии приложения)."""
         for stream_id in list(self._runtimes.keys()):
             self.stop_stream(stream_id)
+        # Страховка на выход: воркеры, не уложившиеся в таймаут stop_stream,
+        # ещё немного ждём, чтобы приложение не завершилось с живыми QThread.
+        pending = [w for w in self._stopping_workers if w.isRunning()]
+        if not pending:
+            return
+        deadline = time.monotonic() + STOP_WAIT_MS / 1000.0
+        for w in pending:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                break
+            w.wait(remaining_ms)
 
     def toggle_stream(self, stream_id: str) -> None:
         """Переключает состояние потока: запуск <-> остановка."""
@@ -149,10 +205,17 @@ class StreamManager(QObject):
 
     def _on_status(self, stream_id: str, status: str) -> None:
         runtime = self._runtimes.get(stream_id)
-        if runtime is None:
+        if runtime is None or runtime.stopping:
+            # Пока идёт остановка, поздние статусы воркера («Переподключение…»)
+            # не должны перекрыть уже показанный статус «Выключено».
             return
         runtime.last_status = status
         self.stream_status_changed.emit(stream_id, status)
+        lower = status.lower()
+        if any(key in lower for key in ("ошибка", "нет сигнала", "переподключение")):
+            logger.warning("Поток %s: %s", stream_id, status)
+        else:
+            logger.debug("Поток %s: %s", stream_id, status)
 
     def _on_fps(self, stream_id: str, fps: float) -> None:
         runtime = self._runtimes.get(stream_id)
@@ -162,6 +225,21 @@ class StreamManager(QObject):
         self.stream_fps_changed.emit(stream_id, fps)
 
     def _on_finished(self, stream_id: str) -> None:
+        # Воркер реально завершился: снимаем ссылки (уничтожение
+        # завершённого QThread безопасно) и чистим список «останавливаемых».
+        runtime = self._runtimes.get(stream_id)
+        if (
+            runtime is not None
+            and runtime.worker is not None
+            and not runtime.worker.isRunning()
+        ):
+            runtime.worker = None
+            runtime.stopping = False
+        # Завершившиеся воркеры в _stopping_workers больше не нужны —
+        # держали их только живыми до finished.
+        self._stopping_workers = {
+            w for w in self._stopping_workers if w.isRunning()
+        }
         self.stream_finished.emit(stream_id)
 
     def _on_result(self, stream_id: str, result: FrameResult) -> None:
@@ -206,4 +284,5 @@ class StreamManager(QObject):
         return summary
 
     def is_live(self) -> bool:
-        return self.worker is not None and self.worker.isRunning()
+        """True, если хотя бы один поток сейчас в эфире."""
+        return any(rt.is_live for rt in self._runtimes.values())

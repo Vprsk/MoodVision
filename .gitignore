@@ -7,3 +7,4 @@ references/
 *.png
 
 *.json
+/state/
