@@ -35,18 +35,15 @@ class YoloFaceDetector:
 
     def _infer(self, frame: NDArray[np.uint8]) -> Results | None:
         """Запускает трекинг для одного кадра и возвращает первый Result"""
-        try:
-            results = self.model.track(
-                frame,
-                persist=True,
-                tracker=self.tracker,
-                conf=self.conf,
-                verbose=self.verbose,
-                device=self.device,
-                stream=True,
-            )
-        except Exception as e:
-            print(f'Возникло исключение при попытке инференса YOLO модели: {e}')
+        results = self.model.track(
+            frame,
+            persist=True,
+            tracker=self.tracker,
+            conf=self.conf,
+            verbose=self.verbose,
+            device=self.device,
+            stream=True,
+        )
 
         return next(results, None)
 
