@@ -1,10 +1,11 @@
 /venv
-test.mp4
 /.vscode
 __pycache__/
+/data/
 *.pyc
 references/
 *.png
 
 *.json
 /state/
+/logs/

@@ -20,7 +20,7 @@ from app.core.persistence import load_streams, save_streams
 from app.core.preset_manager import PresetManager
 from app.core.stream_manager import StreamManager
 from app.ui.streams_page import StreamsPage
-from app.ui.top_bar import TopBar
+from app.ui.top_bar import MENU_ITEMS, TopBar
 
 logger = get_logger("main_window")
 
@@ -54,24 +54,41 @@ class MainWindow(QMainWindow):
 
         # Создаём страницы. Импорт выполняется здесь, чтобы избежать
         # циклической загрузки модулей на уровне пакета.
+        from app.ui.files_page import FilesPage
         from app.ui.history_page import HistoryPage
         from app.ui.presets_page import PresetsPage
 
         self.streams_page = StreamsPage(
             self.manager, self.groups, self.presets, self
         )
+        self.files_page = FilesPage(self)
         self.history_page = HistoryPage(self)
         self.presets_page = PresetsPage(self.presets, self)
 
+        # Порядок страниц в стеке СОВПАДАЕТ с порядком MENU_ITEMS — по нему же
+        # строится словарь навигации, поэтому индексы не разъедутся.
         self.pages.addWidget(self.streams_page)    # index 0
-        self.pages.addWidget(self.history_page)    # index 1
-        self.pages.addWidget(self.presets_page)    # index 2
+        self.pages.addWidget(self.files_page)      # index 1
+        self.pages.addWidget(self.history_page)    # index 2
+        self.pages.addWidget(self.presets_page)    # index 3
 
         layout.addWidget(self.pages, 1)
         self.setCentralWidget(root)
 
-        # --- Навигация ---
+        # --- Навигация: ключ пункта меню -> индекс страницы в стеке ---
+        self._page_index = {
+            key: idx for idx, (key, _) in enumerate(MENU_ITEMS)
+        }
         self.top_bar.navigate.connect(self._navigate)
+
+        # --- Вкладка «Файлы»: сигналы наружу ---
+        # После успешного анализа «История» обновляет свой список.
+        self.files_page.analysis_completed.connect(self._on_analysis_completed)
+        # Кнопка «Открыть в Истории» — переход на вкладку истории.
+        self.files_page.open_history_requested.connect(
+            lambda: self._navigate("history")
+        )
+
         self._navigate("streams")
 
         # --- Восстановление сохранённых потоков ---
@@ -82,13 +99,20 @@ class MainWindow(QMainWindow):
 
     def _navigate(self, key: str) -> None:
         """Переключает страницу по ключу меню."""
-        index = {
-            "streams": 0,
-            "history": 1,
-            "presets": 2,
-        }.get(key, 0)
+        index = self._page_index.get(key, 0)
         self.pages.setCurrentIndex(index)
         self.top_bar.set_active(key)
+
+    def _on_analysis_completed(self, result_dir: str) -> None:
+        """Обновляет «Историю» после завершения анализа файла.
+
+        Метод HistoryPage.refresh появится в следующей задаче, поэтому
+        вызываем его безопасно через getattr — сейчас истории ничего не
+        сломает, а после добавления refresh() подхватит обновление.
+        """
+        refresh = getattr(self.history_page, "refresh", None)
+        if callable(refresh):
+            refresh()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt API)
         """Сохраняет конфиги потоков и пресеты, останавливает воркеры."""
@@ -98,6 +122,8 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 — не роняем закрытие из-за записи
             logger.error("Не удалось сохранить пресеты: %s", exc)
         self.manager.stop_all()
+        # Останавливаем воркеры анализа и файловый плеер FilesPage.
+        self.files_page.shutdown()
         super().closeEvent(event)
 
     def _save_streams(self) -> None:

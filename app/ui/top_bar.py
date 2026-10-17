@@ -17,6 +17,7 @@ from app import theme as T
 # (Ключ, подпись) пунктов меню.
 MENU_ITEMS: List[Tuple[str, str]] = [
     ("streams", "Потоки"),
+    ("files", "Файлы"),
     ("history", "История"),
     ("presets", "Пресеты"),
 ]
