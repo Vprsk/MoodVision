@@ -79,6 +79,71 @@ QPushButton#DangerButton {{
     color: white;
     border: none;
 }}
+QPushButton#PlayerButton {{
+    background: transparent;
+    border: 1px solid {T.BORDER};
+    border-radius: 8px;
+    color: {T.TEXT_PRIMARY};
+}}
+QPushButton#PlayerButton:hover {{
+    background: {T.BG_CARD_HOVER};
+    border-color: {T.BORDER_STRONG};
+}}
+QPushButton#PlayerButton:disabled {{
+    color: {T.TEXT_MUTED};
+    border-color: {T.BORDER};
+}}
+QPushButton#FlatButton {{
+    background: transparent;
+    border: 1px solid {T.BORDER};
+    color: {T.TEXT_SECONDARY};
+    padding: 6px 14px;
+    border-radius: 8px;
+}}
+QPushButton#FlatButton:hover {{
+    color: {T.TEXT_PRIMARY};
+    border-color: {T.BORDER_STRONG};
+    background: {T.BG_CARD};
+}}
+
+/* --- Сегменты (SegmentedControl) --- */
+QPushButton#SegmentButton {{
+    background: transparent;
+    border: 1px solid {T.BORDER};
+    color: {T.TEXT_SECONDARY};
+    padding: 4px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+}}
+QPushButton#SegmentButton:hover {{
+    color: {T.TEXT_PRIMARY};
+    border-color: {T.BORDER_STRONG};
+}}
+QPushButton#SegmentButton:checked {{
+    color: {T.TEXT_PRIMARY};
+    border: 1px solid {T.ACCENT};
+    background: {T.ACCENT_SOFT};
+}}
+
+/* --- Навигация «Настройки» (левая колонка) --- */
+QPushButton#SettingsNavButton {{
+    background: transparent;
+    border: none;
+    color: {T.TEXT_SECONDARY};
+    text-align: left;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+}}
+QPushButton#SettingsNavButton:hover {{
+    color: {T.TEXT_PRIMARY};
+    background: {T.BG_CARD};
+}}
+QPushButton#SettingsNavButton:checked {{
+    color: {T.TEXT_PRIMARY};
+    background: {T.BG_CARD_HOVER};
+    font-weight: 600;
+}}
 
 /* --- Поля ввода --- */
 QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{

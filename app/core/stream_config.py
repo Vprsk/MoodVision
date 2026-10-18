@@ -85,6 +85,10 @@ class StreamConfig:
     pipeline_params: Dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
     stream_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    # UI-уровневые настройки камеры (страница «Настройки → Камеры»):
+    # частота анализа, кроп, поворот кадра и т.п. НЕ передаются в модель —
+    # хранятся только для интерфейса и могут быть переиспользованы в будущем.
+    ui_settings: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def capture_source(self) -> str:
@@ -138,6 +142,7 @@ class StreamConfig:
             "pipeline_key": self.pipeline_key,
             "pipeline_params": dict(self.pipeline_params or {}),
             "enabled": self.enabled,
+            "ui_settings": dict(self.ui_settings or {}),
         }
 
     @classmethod
@@ -152,6 +157,7 @@ class StreamConfig:
             pipeline_params=dict(data.get("pipeline_params") or {}),
             enabled=bool(data.get("enabled", True)),
             stream_id=stream_id or uuid.uuid4().hex[:8],
+            ui_settings=dict(data.get("ui_settings") or {}),
         )
 
 

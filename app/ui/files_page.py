@@ -28,23 +28,37 @@ from typing import List, Optional
 import cv2
 import numpy as np
 from PySide6.QtCore import QThread, Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from app import theme as T
-from app.core.file_analysis import FileAnalysisWorker, list_analyses
+from app.core.episodes import EMOTION_RU, compute_episodes
+from app.core.file_analysis import (
+    FileAnalysisWorker,
+    list_analyses,
+    load_log,
+)
 from app.core.logging import get_logger
 from app.ui.widgets.badges import Badge, MetricCard
+from app.ui.widgets.episodes_timeline import TimelineCard
 from app.ui.widgets.video_player import VideoPlayer
 
 logger = get_logger("files_page")
@@ -53,6 +67,16 @@ logger = get_logger("files_page")
 _VIDEO_FILTER = (
     "Видео (*.mp4 *.avi *.mkv *.mov *.webm *.mpeg *.mpg *.wmv);;Все файлы (*)"
 )
+
+
+def _format_seconds(seconds: float) -> str:
+    """Форматирует секунды в «ММ:СС» (или «Ч:ММ:СС» для длинных видео)."""
+    seconds = max(0, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h > 0:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
 
 
 class _FileDropZone(QFrame):
@@ -280,7 +304,7 @@ class FilesPage(QWidget):
     # --- Построение интерфейса ----------------------------------------------
 
     def _build_left(self) -> QWidget:
-        """Левая колонка: выбор файлов, очередь, запуск анализа."""
+        """Левая колонка: выбор файлов, параметры анализа, очередь."""
         panel = QWidget()
         panel.setFixedWidth(400)
         panel.setStyleSheet(f"background: {T.BG_DARKEST};")
@@ -288,7 +312,7 @@ class FilesPage(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        title = QLabel("Файлы")
+        title = QLabel("Записи")
         title.setStyleSheet(
             f"color: {T.TEXT_PRIMARY}; font-size: 22px; font-weight: 700;"
             " background: transparent; border: none;"
@@ -300,6 +324,35 @@ class FilesPage(QWidget):
         # Drag-and-drop из проводника — колбэк страницы (как в HistoryPage).
         self.drop.files_dropped = self._on_files_dropped
         layout.addWidget(self.drop)
+
+        # --- Параметры анализа (по референсу) ---
+        filters = QGridLayout()
+        filters.setContentsMargins(0, 0, 0, 0)
+        filters.setHorizontalSpacing(10)
+        filters.setVerticalSpacing(8)
+        self._freq_combo = self._make_filter_combo(
+            ["3 к/с", "5 к/с", "8 к/с"], "5 к/с"
+        )
+        self._face_combo = self._make_filter_combo(
+            ["40 px", "48 px", "56 px", "64 px"], "56 px"
+        )
+        self._false_combo = self._make_filter_combo(
+            ["10 %", "15 %", "20 %", "30 %"], "15 %"
+        )
+        self._episode_combo = self._make_filter_combo(
+            ["10 с", "20 с", "30 с", "60 с"], "20 с"
+        )
+        filters.addWidget(self._filter_label("Частота анализа"), 0, 0)
+        filters.addWidget(self._filter_label("Мин. размер лица"), 0, 1)
+        filters.addWidget(self._freq_combo, 1, 0)
+        filters.addWidget(self._face_combo, 1, 1)
+        filters.addWidget(self._filter_label("Ложных не более"), 2, 0)
+        filters.addWidget(self._filter_label("Эпизод не короче"), 2, 1)
+        filters.addWidget(self._false_combo, 3, 0)
+        filters.addWidget(self._episode_combo, 3, 1)
+        filters.setColumnStretch(0, 1)
+        filters.setColumnStretch(1, 1)
+        layout.addLayout(filters)
 
         queue_title = QLabel("Очередь анализа")
         queue_title.setObjectName("SectionTitle")
@@ -350,60 +403,112 @@ class FilesPage(QWidget):
 
         return panel
 
-    def _build_right(self) -> QWidget:
-        """Правая колонка: сводка, плеер результата, список анализов."""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(12)
+    @staticmethod
+    def _filter_label(text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet(
+            f"color: {T.TEXT_SECONDARY}; font-size: 12px; background: transparent;"
+            " border: none;"
+        )
+        return lbl
 
-        # --- Заголовок результата + бейдж + кнопка в «Историю» ---
+    @staticmethod
+    def _make_filter_combo(items: List[str], current: str) -> QComboBox:
+        combo = QComboBox()
+        combo.addItems(items)
+        idx = combo.findText(current)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        return combo
+
+    def _build_right(self) -> QWidget:
+        """Правая колонка: заголовок, плеер + метрики, эпизоды, список."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+        container = QWidget()
+        container.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        # --- Заголовок результата + мета-строка + экспорт ---
         head = QHBoxLayout()
         head.setSpacing(10)
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
         self._result_title = QLabel("Выберите анализ")
         self._result_title.setStyleSheet(
-            f"color: {T.TEXT_PRIMARY}; font-size: 20px; font-weight: 700;"
+            f"color: {T.TEXT_PRIMARY}; font-size: 24px; font-weight: 700;"
             " background: transparent; border: none;"
         )
-        head.addWidget(self._result_title)
+        title_col.addWidget(self._result_title)
+        self._result_meta = QLabel("—")
+        self._result_meta.setStyleSheet(
+            f"color: {T.TEXT_MUTED}; font-size: 13px; background: transparent;"
+            " border: none;"
+        )
+        title_col.addWidget(self._result_meta)
+        head.addLayout(title_col, 1)
         self._result_badge = Badge("—", T.TEXT_MUTED)
+        self._result_badge.hide()
         head.addWidget(self._result_badge)
-        head.addStretch(1)
-        self._history_btn = QPushButton("Открыть в Истории")
+        self._history_btn = QPushButton("⬇  Экспорт")
         self._history_btn.setCursor(Qt.PointingHandCursor)
-        self._history_btn.setToolTip("Перейти к списку всех анализов")
+        self._history_btn.setToolTip("Открыть список анализов в «Истории»")
         self._history_btn.clicked.connect(self.open_history_requested.emit)
         head.addWidget(self._history_btn)
         layout.addLayout(head)
 
-        # --- Сводка по выбранному анализу ---
-        meta = QHBoxLayout()
-        meta.setSpacing(14)
-        info_col = QVBoxLayout()
-        info_col.setSpacing(2)
-        self._result_file = QLabel("Файл: —")
-        self._result_file.setStyleSheet(
-            f"color: {T.TEXT_SECONDARY}; font-size: 12px; background: transparent;"
-            " border: none;"
-        )
-        self._result_date = QLabel("Дата: —")
-        self._result_date.setStyleSheet(
-            f"color: {T.TEXT_MUTED}; font-size: 12px; background: transparent;"
-            " border: none;"
-        )
-        info_col.addWidget(self._result_file)
-        info_col.addWidget(self._result_date)
-        meta.addLayout(info_col)
-        self.card_frames = MetricCard("Кадров", "—", "с детекциями")
-        meta.addWidget(self.card_frames)
-        self.card_detections = MetricCard("Детекций", "—", "всего")
-        meta.addWidget(self.card_detections)
-        meta.addStretch(1)
-        layout.addLayout(meta)
+        # --- Плеер (слева, крупно) + метрики (справа, вертикально) ---
+        main_row = QHBoxLayout()
+        main_row.setSpacing(14)
 
-        # --- Плеер результата (annotated.mp4) ---
         self.player = VideoPlayer()
-        layout.addWidget(self.player, 1)
+        self.player.setMinimumHeight(360)
+        main_row.addWidget(self.player, 1)
+
+        # Вертикальная колонка метрик справа от плеера.
+        metrics_col = QVBoxLayout()
+        metrics_col.setSpacing(10)
+        self.card_incidents = MetricCard("Инцидентов", "—", "из 0 эпизодов")
+        self.card_unsure = MetricCard("«Не уверена»", "—", "эпизодов")
+        self.card_suitable = MetricCard("Пригодных кадров", "—", "по всей записи")
+        for card in (self.card_incidents, self.card_unsure, self.card_suitable):
+            card.setMinimumWidth(200)
+            card.setMaximumWidth(240)
+            metrics_col.addWidget(card)
+        metrics_col.addStretch(1)
+        main_row.addLayout(metrics_col, 0)
+
+        layout.addLayout(main_row, 0)
+
+        # --- Эпизоды на записи: таймлайн + таблица (под плеером) ---
+        self._timeline_card = TimelineCard()
+        layout.addWidget(self._timeline_card)
+
+        self._episodes_table = QTableWidget(0, 5)
+        self._episodes_table.setHorizontalHeaderLabels(
+            ["Время", "Клиент", "Преобладает", "Негатив", "Статус"]
+        )
+        self._episodes_table.verticalHeader().setVisible(False)
+        self._episodes_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._episodes_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self._episodes_table.setFocusPolicy(Qt.NoFocus)
+        self._episodes_table.setShowGrid(False)
+        self._episodes_table.setHorizontalScrollMode(
+            QAbstractItemView.ScrollPerPixel
+        )
+        header = self._episodes_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self._episodes_table.setMinimumHeight(200)
+        layout.addWidget(self._episodes_table, 0)
 
         # --- Список проанализированных ---
         results_title = QLabel("Проанализированные")
@@ -412,11 +517,13 @@ class FilesPage(QWidget):
 
         self.results_list = QListWidget()
         self.results_list.setStyleSheet(self._list_qss())
-        self.results_list.setFixedHeight(150)
+        self.results_list.setFixedHeight(120)
         self.results_list.currentItemChanged.connect(self._on_result_selected)
-        layout.addWidget(self.results_list)
+        layout.addWidget(self.results_list, 0)
 
-        return panel
+        layout.addStretch(1)
+        scroll.setWidget(container)
+        return scroll
 
     @staticmethod
     def _list_qss() -> str:
@@ -635,11 +742,12 @@ class FilesPage(QWidget):
         """Сбрасывает панель результата, когда анализов нет."""
         self._current_analysis = None
         self._result_title.setText("Выберите анализ")
-        self._result_badge.set_badge("—", T.TEXT_MUTED)
-        self._result_file.setText("Файл: —")
-        self._result_date.setText("Дата: —")
-        self.card_frames.set_value("—")
-        self.card_detections.set_value("—")
+        self._result_meta.setText("—")
+        self.card_incidents.set_value("—", "из 0 эпизодов")
+        self.card_unsure.set_value("—", "эпизодов")
+        self.card_suitable.set_value("—", "по всей записи")
+        self._timeline_card.set_data([], 0.0)
+        self._episodes_table.setRowCount(0)
         self.player.set_placeholder("Результат анализа")
         self.player.set_playing(False)
 
@@ -666,21 +774,57 @@ class FilesPage(QWidget):
                 return
 
     def _open_analysis(self, analysis: dict) -> None:
-        """Показывает сводку и запускает просмотр annotated.mp4."""
+        """Показывает сводку, эпизоды и запускает просмотр annotated.mp4."""
         self._current_analysis = analysis
         source = os.path.basename(analysis.get("source_file") or "")
         created = (analysis.get("created_at") or "").replace("T", " ")
-        summary = analysis.get("summary", {})
+        video = analysis.get("video", {})
 
         self._result_title.setText(source or analysis.get("analysis_id", "Анализ"))
-        self._result_file.setText(f"Файл: {source or '—'}")
-        self._result_date.setText(f"Дата: {created or '—'}")
-        self.card_frames.set_value(
-            str(summary.get("frames", 0)), "кадров с детекциями"
-        )
-        self.card_detections.set_value(
-            str(summary.get("detections", 0)), "всего детекций"
-        )
+
+        # --- Мета-строка: длительность · разрешение · дата ---
+        duration = float(video.get("duration_sec") or 0.0)
+        width = int(video.get("width") or 0)
+        height = int(video.get("height") or 0)
+        parts = []
+        if duration > 0:
+            parts.append(_format_seconds(duration))
+        if width and height:
+            parts.append(f"{width}×{height}")
+        if created:
+            parts.append(created)
+        self._result_meta.setText(" · ".join(parts) if parts else "—")
+
+        # --- Эпизоды и метрики из лога ---
+        stats = None
+        log_path = analysis.get("log_path")
+        if log_path:
+            log = load_log(os.path.dirname(log_path))
+            if log:
+                stats = compute_episodes(log)
+        if stats is not None and stats.episodes:
+            total = len(stats.episodes)
+            self.card_incidents.set_value(
+                str(stats.incidents), f"из {total} эпизодов"
+            )
+            self.card_unsure.set_value(str(stats.unsure), "эпизодов")
+            self.card_suitable.set_value(
+                f"{stats.suitable_percent:.0f} %", "по всей записи"
+            )
+            self._timeline_card.set_data(stats.episodes, stats.duration_sec)
+            self._fill_episodes_table(stats.episodes)
+        else:
+            summary = analysis.get("summary", {})
+            frames = summary.get("frames", 0)
+            self.card_incidents.set_value("—", "из 0 эпизодов")
+            self.card_unsure.set_value("—", "эпизодов")
+            self.card_suitable.set_value("—", "по всей записи")
+            self._timeline_card.set_data([], 0.0)
+            self._episodes_table.setRowCount(0)
+            logger.debug(
+                "Лог без эпизодов: %s (кадров с детекциями: %s)",
+                analysis.get("analysis_id"), frames,
+            )
 
         annotated = analysis.get("annotated_path")
         if annotated:
@@ -690,6 +834,22 @@ class FilesPage(QWidget):
             self._result_badge.set_badge("НЕТ ВИДЕО", T.STATUS_WARN)
             self.player.set_placeholder("Аннотированное видео отсутствует")
             self.player.set_playing(False)
+
+    def _fill_episodes_table(self, episodes) -> None:
+        """Заполняет таблицу эпизодов (время, клиент, эмоция, негатив, статус)."""
+        self._episodes_table.setRowCount(len(episodes))
+        for row, ep in enumerate(episodes):
+            items = [
+                QTableWidgetItem(ep.time_range()),
+                QTableWidgetItem(f"#{ep.track_id}"),
+                QTableWidgetItem(EMOTION_RU.get(ep.dominant_emotion, "-")),
+                QTableWidgetItem(f"{ep.negative:.2f}".replace(".", ",")),
+                QTableWidgetItem(ep.status),
+            ]
+            for col, item in enumerate(items):
+                if col == 4:
+                    item.setForeground(QColor(T.status_color(ep.status)))
+                self._episodes_table.setItem(row, col, item)
 
     def _start_playback(self, path: str) -> None:
         """Открывает видеофайл в плеере через _FrameReader."""

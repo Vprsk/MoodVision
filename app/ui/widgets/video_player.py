@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from app import theme as T
 from app.ui.icons import (
+    make_fullscreen_icon,
     make_pause_icon,
     make_play_icon,
     make_seek_back_icon,
@@ -51,6 +52,7 @@ class VideoPlayer(QWidget):
     seek_forward_clicked = Signal()
     seek_backward_clicked = Signal()
     seek_to_ratio = Signal(float)  # 0..1 — позиция на прогресс-баре
+    fullscreen_clicked = Signal()  # запрос на полноэкранный режим
 
     SEEK_STEP_SECONDS = 10.0
 
@@ -81,7 +83,7 @@ class VideoPlayer(QWidget):
         self._play_btn.setCursor(Qt.PointingHandCursor)
         self._play_btn.setToolTip("Пуск / Пауза")
         self._play_btn.setIcon(make_play_icon(20))
-        self._play_btn.clicked.connect(self.play_pause_clicked.emit)
+        self._play_btn.clicked.connect(lambda _=False: self.play_pause_clicked.emit())
         controls.addWidget(self._play_btn)
 
         self._back_btn = QPushButton()
@@ -90,7 +92,9 @@ class VideoPlayer(QWidget):
         self._back_btn.setCursor(Qt.PointingHandCursor)
         self._back_btn.setToolTip(f"Назад {int(self.SEEK_STEP_SECONDS)} с")
         self._back_btn.setIcon(make_seek_back_icon(20))
-        self._back_btn.clicked.connect(self.seek_backward_clicked.emit)
+        self._back_btn.clicked.connect(
+            lambda _=False: self.seek_backward_clicked.emit()
+        )
         controls.addWidget(self._back_btn)
 
         self._fwd_btn = QPushButton()
@@ -99,7 +103,9 @@ class VideoPlayer(QWidget):
         self._fwd_btn.setCursor(Qt.PointingHandCursor)
         self._fwd_btn.setToolTip(f"Вперёд {int(self.SEEK_STEP_SECONDS)} с")
         self._fwd_btn.setIcon(make_seek_forward_icon(20))
-        self._fwd_btn.clicked.connect(self.seek_forward_clicked.emit)
+        self._fwd_btn.clicked.connect(
+            lambda _=False: self.seek_forward_clicked.emit()
+        )
         controls.addWidget(self._fwd_btn)
 
         self._time_now = QLabel("00:00")
@@ -125,6 +131,15 @@ class VideoPlayer(QWidget):
             " background: transparent; border: none;"
         )
         controls.addWidget(self._time_total)
+
+        self._fullscreen_btn = QPushButton()
+        self._fullscreen_btn.setObjectName("PlayerButton")
+        self._fullscreen_btn.setFixedSize(40, 40)
+        self._fullscreen_btn.setCursor(Qt.PointingHandCursor)
+        self._fullscreen_btn.setToolTip("Полноэкранный режим")
+        self._fullscreen_btn.setIcon(make_fullscreen_icon(20))
+        self._fullscreen_btn.clicked.connect(lambda _=False: self._on_fullscreen())
+        controls.addWidget(self._fullscreen_btn)
 
         root.addLayout(controls)
 
@@ -192,4 +207,45 @@ class VideoPlayer(QWidget):
         self._scrubbing = False
         ratio = self._slider.value() / 1000.0
         self.seek_to_ratio.emit(ratio)
+
+    # --- Полноэкранный режим -------------------------------------------------
+
+    def _on_fullscreen(self) -> None:
+        """Открывает текущий кадр в полноэкранном окне поверх плеера."""
+        self.fullscreen_clicked.emit()
+        self._show_fullscreen()
+
+    def _show_fullscreen(self) -> None:
+        """Показывает поверх плеера полноэкранное окно с текущим кадром.
+
+        Окно закрывается по Esc или клику. Плеер продолжает воспроизведение
+        в фоне — окно лишь отображает тот же VideoSurface.
+        """
+        from PySide6.QtWidgets import QDialog
+
+        dialog = QDialog(self.window())
+        dialog.setWindowTitle("Просмотр — Esc для выхода")
+        dialog.setModal(True)
+        dialog.setStyleSheet(f"background: {T.BG_DARKEST};")
+
+        lay = QVBoxLayout(dialog)
+        lay.setContentsMargins(0, 0, 0, 0)
+
+        # Клонируем surface, чтобы показывать те же кадры.
+        clone = VideoSurface("Кадр видеопотока")
+        clone.setStyleSheet(f"background: {T.BG_DARKEST};")
+        lay.addWidget(clone)
+
+        # Подменяем surface: все update_frame пойдут в клон.
+        original = self.surface
+        self.surface = clone
+        dialog.finished.connect(lambda _=0: self._restore_surface(original, clone))
+
+        dialog.showFullScreen()
+        dialog.exec()
+
+    def _restore_surface(self, original, clone) -> None:
+        """Возвращает оригинальный surface после закрытия полноэкранного окна."""
+        self.surface = original
+        clone.deleteLater()
 

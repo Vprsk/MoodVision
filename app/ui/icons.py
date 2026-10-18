@@ -8,7 +8,7 @@ pixel ratio, поэтому остаются чёткими на любых эк
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 
 def make_plus_icon(
@@ -131,3 +131,39 @@ def make_seek_forward_icon(box: int = 24, dpr: int = 3) -> QIcon:
             painter.drawPath(path)
 
     return _icon_from_painter(box, dpr, draw)
+def make_fullscreen_icon(box: int = 20, dpr: int = 3) -> QIcon:
+    """Иконка «Развернуть на весь экран»: стрелки наружу из углов."""
+
+    def draw(painter: QPainter, b: int) -> None:
+        arm = b * 0.42
+        corners = [
+            (b * 0.18, b * 0.18, -1, -1),
+            (b * 0.82, b * 0.18, 1, -1),
+            (b * 0.18, b * 0.82, -1, 1),
+            (b * 0.82, b * 0.82, 1, 1),
+        ]
+        for cx, cy, sx, sy in corners:
+            path = QPainterPath()
+            path.moveTo(cx, cy)
+            path.lineTo(cx + sx * arm, cy)
+            painter.drawPath(path)
+            path = QPainterPath()
+            path.moveTo(cx, cy)
+            path.lineTo(cx, cy + sy * arm)
+            painter.drawPath(path)
+
+    px = QPixmap(box * dpr, box * dpr)
+    px.setDevicePixelRatio(dpr)
+    px.fill(Qt.transparent)
+
+    painter = QPainter(px)
+    painter.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor("#e8edf7"))
+    pen.setWidthF(box * 0.09 * dpr)
+    pen.setCapStyle(Qt.RoundCap)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    draw(painter, box)
+    painter.end()
+    return QIcon(px)
+

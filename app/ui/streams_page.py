@@ -14,8 +14,10 @@ from typing import Dict, List, Optional
 from PySide6.QtCore import QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QMenu,
@@ -23,6 +25,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -39,7 +43,8 @@ from app.core.stream_config import (
 )
 from app.core.stream_manager import StreamManager, StreamRuntime
 from app.ui.icons import make_plus_icon
-from app.ui.widgets.badges import Badge
+from app.ui.widgets.badges import Badge, MetricCard
+from app.ui.widgets.incident_banner import IncidentBanner
 from app.ui.widgets.video_player import VideoPlayer
 from app.ui.widgets.visitors_panel import VisitorsPanel
 
@@ -48,6 +53,9 @@ logger = get_logger("streams_page")
 # Как часто (в секундах) перерисовывать тяжёлую панель «Посетители».
 # Сигнал треков приходит на каждом кадре, но панель обновляем реже.
 VISITORS_REFRESH_SECONDS = 0.2  # ~5 раз в секунду
+
+# Подпись под метрикой FPS (заменяет «Пригодных кадров», когда нет видео).
+FPS_CAPTION = "FPS обработки"
 
 
 class _CameraItem(QFrame):
@@ -184,6 +192,7 @@ class StreamsPage(QWidget):
         # Для контекстного меню: какой поток/группу показали по правому клику.
         self._context_stream_id: Optional[str] = None
         self._context_group: Optional[str] = None
+        self._current_pipeline_label: str = "—"
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -251,17 +260,25 @@ class StreamsPage(QWidget):
         return panel
 
     def _build_detail(self) -> QWidget:
-        """Правая колонка: заголовок камеры, видео, посетители."""
+        """Правая колонка: баннер, метрики, видео, посетители, журнал."""
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        # --- Баннер инцидента (сверху, по референсу) ---
+        self._incident_banner = IncidentBanner()
+        self._incident_banner.confirm.connect(self._on_incident_confirm)
+        self._incident_banner.mark_false.connect(self._on_incident_false)
+        self._incident_banner.dismiss.connect(self._on_incident_dismiss)
+        layout.addWidget(self._incident_banner)
 
         # --- Заголовок выбранной камеры ---
         head = QHBoxLayout()
+        head.setSpacing(12)
         self._detail_title = QLabel("Выберите поток")
         self._detail_title.setStyleSheet(
-            f"color: {T.TEXT_PRIMARY}; font-size: 20px; font-weight: 700;"
+            f"color: {T.TEXT_PRIMARY}; font-size: 24px; font-weight: 700;"
             " background: transparent; border: none;"
         )
         head.addWidget(self._detail_title)
@@ -275,25 +292,26 @@ class StreamsPage(QWidget):
         head.addWidget(self._toggle_btn)
         layout.addLayout(head)
 
+        # --- Карточки метрик (по референсу) ---
+        cards = QHBoxLayout()
+        cards.setSpacing(12)
+        self._clients_metric = MetricCard("Клиентов", "0", "в кадре")
+        self._status_metric = MetricCard("Статус", "—", "по всем клиентам")
+        self._suitable_metric = MetricCard("Пригодных кадров", "—", "за сессию")
+        cards.addWidget(self._clients_metric)
+        cards.addWidget(self._status_metric)
+        cards.addWidget(self._suitable_metric)
+        cards.addStretch(1)
+        layout.addLayout(cards)
+
         # --- Видео + правая панель посетителей ---
         content = QHBoxLayout()
-        content.setSpacing(12)
+        content.setSpacing(14)
 
         video_col = QVBoxLayout()
         video_col.setSpacing(8)
         self.player = VideoPlayer()
         video_col.addWidget(self.player, 1)
-
-        metrics = QHBoxLayout()
-        metrics.setSpacing(10)
-        self._clients_metric = self._metric_chip("Клиентов", "0")
-        self._status_metric = self._metric_chip("Статус", "—")
-        self._fps_metric = self._metric_chip("FPS", "0")
-        metrics.addWidget(self._clients_metric)
-        metrics.addWidget(self._status_metric)
-        metrics.addWidget(self._fps_metric)
-        metrics.addStretch(1)
-        video_col.addLayout(metrics)
         content.addLayout(video_col, 3)
 
         self.visitors = VisitorsPanel()
@@ -302,42 +320,64 @@ class StreamsPage(QWidget):
 
         layout.addLayout(content, 1)
 
+        # --- Журнал (таблица последних наблюдений) ---
+        journal_title = QLabel("Журнал")
+        journal_title.setStyleSheet(
+            f"color: {T.TEXT_PRIMARY}; font-size: 16px; font-weight: 700;"
+            " background: transparent; border: none;"
+        )
+        layout.addWidget(journal_title)
+
+        self._journal_table = QTableWidget(0, 5)
+        self._journal_table.setHorizontalHeaderLabels(
+            ["Время", "Клиентов", "Преобладает", "Негатив", "Статус"]
+        )
+        self._journal_table.verticalHeader().setVisible(False)
+        self._journal_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._journal_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self._journal_table.setFocusPolicy(Qt.NoFocus)
+        self._journal_table.setShowGrid(False)
+        self._journal_table.setMinimumHeight(150)
+        self._journal_table.setMaximumHeight(230)
+        jh = self._journal_table.horizontalHeader()
+        jh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        jh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        jh.setSectionResizeMode(2, QHeaderView.Stretch)
+        jh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        jh.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        layout.addWidget(self._journal_table)
+
+        # --- Сворачиваемая секция «Камера и обработка» ---
+        self._details_toggle = QPushButton("Камера и обработка  ⌄")
+        self._details_toggle.setObjectName("FlatButton")
+        self._details_toggle.setCursor(Qt.PointingHandCursor)
+        self._details_toggle.clicked.connect(self._toggle_details)
+        layout.addWidget(self._details_toggle)
+
+        self._details_panel = QWidget()
+        self._details_panel.setStyleSheet(
+            f"background: {T.BG_CARD}; border: 1px solid {T.BORDER};"
+            " border-radius: 10px;"
+        )
+        dl = QVBoxLayout(self._details_panel)
+        dl.setContentsMargins(16, 12, 16, 12)
+        dl.setSpacing(4)
+        self._details_source = QLabel("Источник: —")
+        self._details_pipeline = QLabel("Пайплайн: —")
+        for lbl in (self._details_source, self._details_pipeline):
+            lbl.setStyleSheet(
+                f"color: {T.TEXT_SECONDARY}; font-size: 13px;"
+                " background: transparent; border: none;"
+            )
+            dl.addWidget(lbl)
+        self._details_panel.setVisible(False)
+        layout.addWidget(self._details_panel)
+
+        # Счётчик пригодных кадров (доля кадров с лицами).
+        self._frames_total = 0
+        self._frames_with_faces = 0
+
         return panel
-
-    @staticmethod
-    def _metric_chip(title: str, value: str) -> QFrame:
-        """Небольшая карточка-метрика для строки под видео."""
-        chip = QFrame()
-        chip.setObjectName("Card")
-        lay = QVBoxLayout(chip)
-        lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(2)
-        t = QLabel(title)
-        t.setStyleSheet(
-            f"color: {T.TEXT_SECONDARY}; font-size: 12px;"
-            " background: transparent; border: none;"
-        )
-        v = QLabel(value)
-        v.setStyleSheet(
-            f"color: {T.TEXT_PRIMARY}; font-size: 18px; font-weight: 700;"
-            " background: transparent; border: none;"
-        )
-        v.setObjectName("MetricValue")
-        lay.addWidget(t)
-        lay.addWidget(v)
-        return chip
-
-    @staticmethod
-    def _set_metric_value(chip: QFrame, value: str, color: str = "") -> None:
-        """Обновляет значение внутри карточки-метрики (по objectName)."""
-        label = chip.findChild(QLabel, "MetricValue")
-        if label is not None:
-            label.setText(value)
-            if color:
-                label.setStyleSheet(
-                    f"color: {color}; font-size: 18px; font-weight: 700;"
-                    " background: transparent; border: none;"
-                )
 
     # --- Управление списком потоков ----------------------------------------
 
@@ -606,9 +646,13 @@ class StreamsPage(QWidget):
         self._pending_tracks = []
         self._last_visitors_update = 0.0
         self.visitors.update_tracks([])
-        self._set_metric_value(self._clients_metric, "0")
-        self._set_metric_value(self._status_metric, "—", T.TEXT_SECONDARY)
-        self._set_metric_value(self._fps_metric, "0")
+        self._clients_metric.set_value("0", "в кадре")
+        self._status_metric.set_value("—", "по всем клиентам")
+        self._suitable_metric.set_value("—", "за сессию")
+        self._frames_total = 0
+        self._frames_with_faces = 0
+        self._journal_table.setRowCount(0)
+        self._incident_banner.set_incident(None)
 
 
     def _clear_list(self) -> None:
@@ -638,15 +682,26 @@ class StreamsPage(QWidget):
         self._toggle_btn.setEnabled(True)
         self._toggle_btn.setText("Выключить" if live else "Включить")
 
+        # Заполняем секцию «Камера и обработка» для выбранного потока.
+        self._details_source.setText(f"Источник: {runtime.config.capture_source}")
+        self._current_pipeline_label = runtime.config.pipeline_key
+        self._details_pipeline.setText(
+            f"Пайплайн: {runtime.config.pipeline_key} · FPS: —"
+        )
+
         if not live:
             self.player.set_placeholder("Кадр видеопотока")
             self.player.set_playing(False)
             self._pending_tracks = []
             self._last_visitors_update = 0.0
             self.visitors.update_tracks([])
-            self._set_metric_value(self._clients_metric, "0")
-            self._set_metric_value(self._status_metric, "—", T.TEXT_SECONDARY)
-            self._set_metric_value(self._fps_metric, "0")
+            self._clients_metric.set_value("0", "в кадре")
+            self._status_metric.set_value("—", "по всем клиентам")
+            self._suitable_metric.set_value("—", "за сессию")
+            self._frames_total = 0
+            self._frames_with_faces = 0
+            self._journal_table.setRowCount(0)
+            self._incident_banner.set_incident(None)
 
         # Подсветка выбранной карточки.
         for sid, widget in self._camera_widgets.items():
@@ -695,6 +750,13 @@ class StreamsPage(QWidget):
 
         self._frame_conns["current"] = worker
 
+        # Обновляем секцию «Камера и обработка».
+        self._details_source.setText(f"Источник: {runtime.config.capture_source}")
+        self._current_pipeline_label = runtime.config.pipeline_key
+        self._details_pipeline.setText(
+            f"Пайплайн: {runtime.config.pipeline_key} · FPS: —"
+        )
+
     def _disconnect_video(self) -> None:
         """Отключает сигналы ранее активного воркера от плеера."""
         worker = self._frame_conns.get("current")
@@ -725,7 +787,7 @@ class StreamsPage(QWidget):
 
     def _on_fps_updated(self, fps: float) -> None:
         """Обновляет метрику FPS для выбранного потока."""
-        self._set_metric_value(self._fps_metric, f"{fps:.1f}")
+        self._suitable_metric.set_value(f"{fps:.1f}", FPS_CAPTION)
 
 
     def _on_add_clicked(self, group: Optional[str] = None) -> None:
@@ -806,21 +868,60 @@ class StreamsPage(QWidget):
         # Кэшируем последние треки выбранного потока.
         self._pending_tracks = list(tracks)
         summary = StreamManager.summarize_tracks(tracks)
-        self._set_metric_value(self._clients_metric, str(len(tracks)))
+        self._clients_metric.set_value(str(len(tracks)), "в кадре")
 
-        if summary[STATUS_INCIDENT] > 0:
-            self._set_metric_value(
-                self._status_metric, "Инцидент", T.STATUS_INCIDENT
+        incident_count = summary.get(STATUS_INCIDENT, 0)
+        if incident_count > 0:
+            self._status_metric.set_value(
+                "Инцидент", T.STATUS_INCIDENT
             )
-        elif summary[STATUS_UNSURE] > 0:
-            self._set_metric_value(self._status_metric, "Не уверена", T.STATUS_WARN)
-        elif summary[STATUS_NORMAL] > 0:
-            self._set_metric_value(self._status_metric, "Норма", T.STATUS_LIVE)
+            self._incident_banner.set_incident(
+                f"Клиентов с инцидентом: {incident_count}"
+            )
+            self._add_journal_row(
+                len(tracks), "Злость/Грусть/Отвращение", "Инцидент", T.STATUS_INCIDENT
+            )
+        elif summary.get(STATUS_UNSURE, 0) > 0:
+            self._status_metric.set_value("Не уверена", T.STATUS_WARN)
+            self._incident_banner.set_incident(None)
+        elif summary.get(STATUS_NORMAL, 0) > 0:
+            self._status_metric.set_value("Норма", T.STATUS_LIVE)
+            self._incident_banner.set_incident(None)
         else:
-            self._set_metric_value(self._status_metric, "—", T.TEXT_SECONDARY)
+            self._status_metric.set_value("—", T.TEXT_SECONDARY)
+            self._incident_banner.set_incident(None)
 
         # Троттлинг тяжёлой панели посетителей.
         self._maybe_refresh_visitors()
+
+    def _add_journal_row(
+        self,
+        clients: int,
+        emotion: str,
+        status: str,
+        status_color: str,
+    ) -> None:
+        """Добавляет строку в журнал наблюдений."""
+        from datetime import datetime
+
+        now = datetime.now().strftime("%H:%M:%S")
+        table = self._journal_table
+        row = table.rowCount()
+        table.insertRow(row)
+        items = [
+            QTableWidgetItem(now),
+            QTableWidgetItem(str(clients)),
+            QTableWidgetItem(emotion),
+            QTableWidgetItem("—"),
+            QTableWidgetItem(status),
+        ]
+        items[4].setForeground(QColor(status_color))
+        for col, item in enumerate(items):
+            table.setItem(row, col, item)
+        # Оставляем не более 15 строк.
+        while table.rowCount() > 15:
+            table.removeRow(0)
+        table.scrollToBottom()
 
     def _maybe_refresh_visitors(self) -> None:
         """Перерисовывает панель посетителей не чаще, чем раз в интервал."""
@@ -841,5 +942,26 @@ class StreamsPage(QWidget):
             return "Норма", T.STATUS_LIVE
         return "—", T.TEXT_MUTED
 
+    # --- Обработчики баннера инцидента --------------------------------------
+
+    def _on_incident_confirm(self) -> None:
+        """Пользователь подтвердил инцидент — скрывает баннер."""
+        self._incident_banner.set_incident(None)
+
+    def _on_incident_false(self) -> None:
+        """Пользователь пометил инцидент как ложное срабатывание."""
+        self._incident_banner.set_incident(None)
+
+    def _on_incident_dismiss(self) -> None:
+        """Пользователь скрыл баннер."""
+        self._incident_banner.set_incident(None)
+
+    def _toggle_details(self) -> None:
+        """Разворачивает/сворачивает секцию «Камера и обработка»."""
+        visible = not self._details_panel.isVisible()
+        self._details_panel.setVisible(visible)
+        self._details_toggle.setText(
+            f"Камера и обработка {'⌃' if visible else '⌄'}"
+        )
 
 

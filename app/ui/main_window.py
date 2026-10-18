@@ -57,20 +57,28 @@ class MainWindow(QMainWindow):
         from app.ui.files_page import FilesPage
         from app.ui.history_page import HistoryPage
         from app.ui.presets_page import PresetsPage
+        from app.ui.settings_page import SettingsPage
 
         self.streams_page = StreamsPage(
             self.manager, self.groups, self.presets, self
         )
         self.files_page = FilesPage(self)
         self.history_page = HistoryPage(self)
-        self.presets_page = PresetsPage(self.presets, self)
+        # «Настройки» включают встроенный «Пресеты»-виджет (раздел «Пресеты»),
+        # поэтому отдельная страница пресетов в стеке больше не нужна.
+        self.settings_page = SettingsPage(
+            manager=self.manager,
+            preset_manager=self.presets,
+            presets_page_factory=lambda: PresetsPage(self.presets, self),
+            parent=self,
+        )
 
         # Порядок страниц в стеке СОВПАДАЕТ с порядком MENU_ITEMS — по нему же
         # строится словарь навигации, поэтому индексы не разъедутся.
-        self.pages.addWidget(self.streams_page)    # index 0
-        self.pages.addWidget(self.files_page)      # index 1
-        self.pages.addWidget(self.history_page)    # index 2
-        self.pages.addWidget(self.presets_page)    # index 3
+        self.pages.addWidget(self.streams_page)    # index 0 — Потоки
+        self.pages.addWidget(self.history_page)    # index 1 — История
+        self.pages.addWidget(self.settings_page)   # index 2 — Настройки
+        self.pages.addWidget(self.files_page)      # index 3 — Анализ видео
 
         layout.addWidget(self.pages, 1)
         self.setCentralWidget(root)

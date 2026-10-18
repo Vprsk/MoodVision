@@ -1,7 +1,8 @@
-"""Верхняя панель приложения: логотип, меню-разделы, профиль.
+"""Верхняя панель приложения: логотип, меню-разделы.
 
 Меню реализовано как набор взаимно-исключающих кнопок-переключателей,
-сигнализирующих индекс открываемой страницы в QStackedWidget.
+сигнализирующих индекс открываемой страницы в QStackedWidget. Пункты и
+порядок соответствуют референсу: Потоки / История / Настройки / Анализ видео.
 """
 
 from __future__ import annotations
@@ -17,9 +18,9 @@ from app import theme as T
 # (Ключ, подпись) пунктов меню.
 MENU_ITEMS: List[Tuple[str, str]] = [
     ("streams", "Потоки"),
-    ("files", "Файлы"),
     ("history", "История"),
-    ("presets", "Пресеты"),
+    ("settings", "Настройки"),
+    ("files", "Анализ видео"),
 ]
 
 
@@ -31,12 +32,12 @@ class TopBar(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("TopBar")
-        self.setFixedHeight(56)
+        self.setFixedHeight(58)
 
         self._buttons: dict[str, QPushButton] = {}
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setContentsMargins(20, 8, 20, 8)
         layout.setSpacing(6)
 
         # --- Логотип ---
@@ -46,7 +47,7 @@ class TopBar(QWidget):
         title.setObjectName("AppTitle")
         layout.addWidget(logo)
         layout.addWidget(title)
-        layout.addSpacing(24)
+        layout.addSpacing(28)
 
         # --- Пункты меню ---
         for key, label in MENU_ITEMS:
@@ -59,11 +60,6 @@ class TopBar(QWidget):
             layout.addWidget(btn)
 
         layout.addStretch(1)
-
-        # Профиль справа (декор).
-        profile = QLabel("👤")
-        profile.setStyleSheet(f"font-size: 20px; color: {T.TEXT_SECONDARY};")
-        layout.addWidget(profile)
 
         # Активный раздел по умолчанию.
         self.set_active("streams")
