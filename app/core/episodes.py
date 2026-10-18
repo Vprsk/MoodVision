@@ -19,6 +19,7 @@ from app.core.stream_config import (
     STATUS_UNSURE,
     classify_status,
 )
+from contracts.schemas import Emotion
 
 # Разрыв между наблюдениями трека (в секундах), при котором эпизод считается
 # прерванным и начинается новый.
@@ -172,10 +173,9 @@ def _close_episode(track_id: int, state: Dict[str, Any]) -> Episode:
     confidence = weights.get(dominant, 0.0) / total
 
     try:
-        from contracts.schemas import Emotion
-
         status = classify_status(Emotion(dominant), confidence)
     except ValueError:
+        # Некорректная строка эмоции в логе — считаем «Не уверена».
         status = STATUS_UNSURE
 
     return Episode(

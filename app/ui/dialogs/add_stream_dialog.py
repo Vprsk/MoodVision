@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QVBoxLayout,
-    QWidget,
 )
 
 from app import theme as T

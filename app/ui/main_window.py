@@ -111,16 +111,9 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentIndex(index)
         self.top_bar.set_active(key)
 
-    def _on_analysis_completed(self, result_dir: str) -> None:
-        """Обновляет «Историю» после завершения анализа файла.
-
-        Метод HistoryPage.refresh появится в следующей задаче, поэтому
-        вызываем его безопасно через getattr — сейчас истории ничего не
-        сломает, а после добавления refresh() подхватит обновление.
-        """
-        refresh = getattr(self.history_page, "refresh", None)
-        if callable(refresh):
-            refresh()
+    def _on_analysis_completed(self, _result_dir: str) -> None:
+        """Обновляет «Историю» после завершения анализа файла."""
+        self.history_page.refresh()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt API)
         """Сохраняет конфиги потоков и пресеты, останавливает воркеры."""

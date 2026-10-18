@@ -26,7 +26,7 @@ QT_QPA_PLATFORM=offscreen env/Scripts/python app/main.py
 End-to-end проверка видеоворкера с реальной моделью на `data/test.mp4`:
 
 ```bash
-env/Scripts/python scripts/e2e_check.py
+env/Scripts/python mood_base/scripts/e2e_check.py
 ```
 
 ## Архитектура
@@ -42,19 +42,24 @@ app/
     annotate.py            # отрисовка bbox/эмоций на кадре (перенос из try.py)
     video_worker.py        # QThread: чтение потока + predict() + эмит кадров
     stream_manager.py      # владеет воркерами, агрегирует треки, сигналы в UI
+    file_analysis.py       # пакетный анализ файла (воркер + хранилище результатов)
+    episodes.py            # эпизоды/статистика по логу анализа
+    format.py              # форматирование времени (ММ:СС / Ч:ММ:СС) для UI
+    persistence.py         # streams.json + атомарная запись JSON (write_json_atomic)
+    group_manager.py       # группы потоков (groups.json)
   ui/
     main_window.py         # окно + навигация (QStackedWidget) + stop_all при закрытии
-    top_bar.py             # верхняя панель меню (Потоки/История/Пресеты)
+    top_bar.py             # верхняя панель меню (Потоки/История/Настройки/Анализ видео)
     streams_page.py        # ПОТОКИ: список камер + LIVE-видео + посетители + метрики
-    history_page.py        # ИСТОРИЯ: drag-and-drop записей + статистика
-    analysis_page.py       # АНАЛИЗ ВИДЕО (вкладка убрана, модуль не используется)
+    history_page.py        # ИСТОРИЯ: сохранённые анализы записей (аккордеоны)
+    files_page.py          # АНАЛИЗ ВИДЕО: очередь файлов + плеер результата
     presets_page.py        # ПРЕСЕТЫ: список + параметры + создать/изменить/удалить
-    settings_page.py       # НАСТРОЙКИ (вкладка убрана, модуль не используется)
+    settings_page.py       # НАСТРОЙКИ: секции (уведомления, камеры, пресеты…)
     style_qss.py           # тёмная тема (QSS)
     dialogs/               # диалог добавления потока (+ выбор пресета),
                            # диалог создания/редактирования пресета
-    widgets/               # VideoSurface, VisitorsPanel, Badge...
-                           # (incident_banner.py больше не используется)
+    widgets/               # VideoSurface, VideoPlayer, VisitorsPanel,
+                           # IncidentBanner, Badge, Timeline…
 ```
 
 ### Ключевые решения
@@ -72,12 +77,13 @@ app/
   загружается один раз на процесс и переиспользуется всеми экземплярами
   пайплайна (старт нового потока не перечитывает модель). Сначала берётся
   локальный кэш HuggingFace, сеть используется только при первой загрузке —
-  см. `models/current_yolo_vit.py`, проверка `scripts/emotion_cache_check.py`.
+  см. `mood_base/models/current_yolo_vit.py`, проверка
+  `mood_base/scripts/emotion_cache_check.py`.
 - **Корректное завершение.** `MainWindow.closeEvent` останавливает все воркеры.
 
 ## Добавление нового пайплайна
 
-1. Реализуйте контракт (пример — `models/current_yolo_vit.py`):
+1. Реализуйте контракт (пример — `mood_base/models/current_yolo_vit.py`):
 
    ```python
    from contracts.base import BaseFaceEmotionModel
@@ -165,7 +171,5 @@ app/
 
 ## Ограничения / TODO
 
-- Глубокая аналитика записей (История) — UI-каркас готов, подключение
-  пакетного контроллера обработки — в планах.
 - Параметры качества (частота анализа, мин. размер лица, резкость, пороги)
   настраиваются через пресеты (`pipeline_params` потока).

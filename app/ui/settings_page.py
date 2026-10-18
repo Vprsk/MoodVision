@@ -79,38 +79,6 @@ class SettingsPage(QWidget):
 
         left = QWidget()
         left.setFixedWidth(260)
-    def _show_section(self, key: str) -> None:
-        order = [k for k, _ in SECTIONS]
-        if key not in order:
-            return
-        for k, btn in self._section_buttons.items():
-            btn.setChecked(k == key)
-        self._stack.setCurrentIndex(order.index(key))
-        if key == "cameras":
-            self._rebuild_camera_list()
-
-    @staticmethod
-    def _build_info_section(title: str, text: str) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(36, 28, 36, 28)
-        layout.setSpacing(12)
-
-        heading = QLabel(title)
-        heading.setStyleSheet(
-            f"color: {T.TEXT_PRIMARY}; font-size: 22px; font-weight: 700;"
-            " background: transparent; border: none;"
-        )
-        layout.addWidget(heading)
-
-        desc = QLabel(text)
-        desc.setWordWrap(True)
-        desc.setStyleSheet(
-            f"color: {T.TEXT_SECONDARY}; background: transparent; border: none;"
-        )
-        layout.addWidget(desc)
-        layout.addStretch(1)
-        return page
         left.setStyleSheet(f"background: {T.BG_DARKEST};")
         ll = QVBoxLayout(left)
         ll.setContentsMargins(16, 24, 16, 16)
@@ -152,6 +120,41 @@ class SettingsPage(QWidget):
             ))
         root.addWidget(self._stack, 1)
 
+        # Начальная секция — «Уведомления» (индекс 0 стека).
+        self._show_section("notifications")
+
+    def _show_section(self, key: str) -> None:
+        order = [k for k, _ in SECTIONS]
+        if key not in order:
+            return
+        for k, btn in self._section_buttons.items():
+            btn.setChecked(k == key)
+        self._stack.setCurrentIndex(order.index(key))
+        if key == "cameras":
+            self._rebuild_camera_list()
+
+    @staticmethod
+    def _build_info_section(title: str, text: str) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(36, 28, 36, 28)
+        layout.setSpacing(12)
+
+        heading = QLabel(title)
+        heading.setStyleSheet(
+            f"color: {T.TEXT_PRIMARY}; font-size: 22px; font-weight: 700;"
+            " background: transparent; border: none;"
+        )
+        layout.addWidget(heading)
+
+        desc = QLabel(text)
+        desc.setWordWrap(True)
+        desc.setStyleSheet(
+            f"color: {T.TEXT_SECONDARY}; background: transparent; border: none;"
+        )
+        layout.addWidget(desc)
+        layout.addStretch(1)
+        return page
 
     def _build_cameras_section(self) -> QWidget:
         page = QWidget()

@@ -9,10 +9,11 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QCursor
+from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -39,7 +40,6 @@ from app.core.stream_config import (
     STATUS_NORMAL,
     STATUS_UNSURE,
     ClientTrack,
-    StreamConfig,
 )
 from app.core.stream_manager import StreamManager, StreamRuntime
 from app.ui.icons import make_plus_icon
@@ -268,9 +268,9 @@ class StreamsPage(QWidget):
 
         # --- Баннер инцидента (сверху, по референсу) ---
         self._incident_banner = IncidentBanner()
-        self._incident_banner.confirm.connect(self._on_incident_confirm)
-        self._incident_banner.mark_false.connect(self._on_incident_false)
-        self._incident_banner.dismiss.connect(self._on_incident_dismiss)
+        self._incident_banner.confirm.connect(self._on_incident_resolved)
+        self._incident_banner.mark_false.connect(self._on_incident_resolved)
+        self._incident_banner.dismiss.connect(self._on_incident_resolved)
         layout.addWidget(self._incident_banner)
 
         # --- Заголовок выбранной камеры ---
@@ -870,25 +870,17 @@ class StreamsPage(QWidget):
         summary = StreamManager.summarize_tracks(tracks)
         self._clients_metric.set_value(str(len(tracks)), "в кадре")
 
+        label, color = self._badge_for_summary(summary)
+        self._status_metric.set_value(label, color)
         incident_count = summary.get(STATUS_INCIDENT, 0)
         if incident_count > 0:
-            self._status_metric.set_value(
-                "Инцидент", T.STATUS_INCIDENT
-            )
             self._incident_banner.set_incident(
                 f"Клиентов с инцидентом: {incident_count}"
             )
             self._add_journal_row(
-                len(tracks), "Злость/Грусть/Отвращение", "Инцидент", T.STATUS_INCIDENT
+                len(tracks), "Злость/Грусть/Отвращение", STATUS_INCIDENT, color
             )
-        elif summary.get(STATUS_UNSURE, 0) > 0:
-            self._status_metric.set_value("Не уверена", T.STATUS_WARN)
-            self._incident_banner.set_incident(None)
-        elif summary.get(STATUS_NORMAL, 0) > 0:
-            self._status_metric.set_value("Норма", T.STATUS_LIVE)
-            self._incident_banner.set_incident(None)
         else:
-            self._status_metric.set_value("—", T.TEXT_SECONDARY)
             self._incident_banner.set_incident(None)
 
         # Троттлинг тяжёлой панели посетителей.
@@ -902,8 +894,6 @@ class StreamsPage(QWidget):
         status_color: str,
     ) -> None:
         """Добавляет строку в журнал наблюдений."""
-        from datetime import datetime
-
         now = datetime.now().strftime("%H:%M:%S")
         table = self._journal_table
         row = table.rowCount()
@@ -944,16 +934,11 @@ class StreamsPage(QWidget):
 
     # --- Обработчики баннера инцидента --------------------------------------
 
-    def _on_incident_confirm(self) -> None:
-        """Пользователь подтвердил инцидент — скрывает баннер."""
-        self._incident_banner.set_incident(None)
+    def _on_incident_resolved(self) -> None:
+        """Инцидент обработан (подтверждён/ложный/скрыт) — убираем баннер.
 
-    def _on_incident_false(self) -> None:
-        """Пользователь пометил инцидент как ложное срабатывание."""
-        self._incident_banner.set_incident(None)
-
-    def _on_incident_dismiss(self) -> None:
-        """Пользователь скрыл баннер."""
+        Все три кнопки баннера пока ведут к одному действию: скрытию.
+        """
         self._incident_banner.set_incident(None)
 
     def _toggle_details(self) -> None:

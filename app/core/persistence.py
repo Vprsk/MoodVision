@@ -31,6 +31,32 @@ def _resolve_path(path: str | os.PathLike | None) -> Path:
     return Path(path) if path is not None else DEFAULT_STORE_PATH
 
 
+def write_json_atomic(path: str | os.PathLike, payload: dict) -> Path:
+    """Атомарно записывает payload как JSON в указанный путь.
+
+    Запись идёт во временный файл в той же директории, затем атомарно
+    заменяет целевой через os.replace — защита от повреждённого файла,
+    если приложение закроют во время сохранения. Возвращает путь к файлу.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=str(target.parent), prefix=f".{target.stem}-", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, target)
+    finally:
+        # Если replace не удался — уберём временный файл.
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return target
+
+
 def save_streams(
     configs: List[StreamConfig], path: str | os.PathLike | None = None
 ) -> Path:
@@ -41,27 +67,12 @@ def save_streams(
     """
     target = _resolve_path(path)
     payload = {"version": 1, "streams": [c.to_dict() for c in configs]}
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # Пишем во временный файл в той же директории, затем атомарно заменяем.
-    fd, tmp = tempfile.mkstemp(
-        dir=str(target.parent), prefix=".streams-", suffix=".tmp"
-    )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, target)
-        logger.debug("Сохранено %d потоков в %s", len(configs), target)
+        write_json_atomic(target, payload)
     except OSError as exc:  # noqa: BLE001
         logger.error("Не удалось сохранить потоки в %s: %s", target, exc)
         raise
-    finally:
-        # Если replace не удался — уберём временный файл.
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+    logger.debug("Сохранено %d потоков в %s", len(configs), target)
     return target
 
 

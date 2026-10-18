@@ -155,13 +155,17 @@ class VideoWorker(QThread):
     def _open_capture(self) -> cv2.VideoCapture:
         """Открывает источник видеопотока.
 
-        Для сетевых live-источников (RTSP/HTTP/RTMP) задаёт таймауты
-        соединения и чтения: зависший поток иначе может навсегда
-        заблокировать read(), из-за чего stop() не завершит воркер.
+        Для индекса веб-камеры («0», «1», …) аргумент приводится к int:
+        cv2.VideoCapture("0") со строкой интерпретирует «0» как имя файла
+        и не открывает камеру. Для сетевых live-источников (RTSP/HTTP/RTMP)
+        задаёт таймауты соединения и чтения: зависший поток иначе может
+        навсегда заблокировать read(), из-за чего stop() не завершит воркер.
         Если бэкенд OpenCV не принял параметры — открываем без таймаутов
         (поведение как раньше).
         """
         source = self._config.capture_source
+        # cv2 принимает индекс камеры только как int, не как строку.
+        capture_arg: int | str = int(source) if source.isdigit() else source
         is_network = source.lower().startswith(
             ("rtsp://", "http://", "https://", "rtmp://")
         )
@@ -169,7 +173,7 @@ class VideoWorker(QThread):
         read_prop = getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None)
         if is_network and open_prop is not None and read_prop is not None:
             cap = cv2.VideoCapture(
-                source,
+                capture_arg,
                 cv2.CAP_ANY,
                 [open_prop, _OPEN_TIMEOUT_MS, read_prop, _READ_TIMEOUT_MS],
             )
@@ -178,7 +182,7 @@ class VideoWorker(QThread):
                 return cap
             cap.release()
             logger.warning("Не удалось открыть сетевой источник с таймаутами: %s", source)
-        cap = cv2.VideoCapture(source)
+        cap = cv2.VideoCapture(capture_arg)
         if cap.isOpened():
             logger.info("Источник открыт: %s", source)
         else:
@@ -391,7 +395,6 @@ class VideoWorker(QThread):
         self.position_changed.emit(
             self._current_position_seconds(), self._duration
         )
-
 
     def _release(self) -> None:
         """Освобождает ресурсы захвата. Вызывается в finally."""

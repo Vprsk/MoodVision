@@ -15,14 +15,12 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.core.persistence import PROJECT_ROOT
+from app.core.persistence import PROJECT_ROOT, write_json_atomic
 
 DEFAULT_PRESETS_PATH = PROJECT_ROOT / "presets.json"
 BUILTIN_PREFIX = "builtin:"
@@ -164,21 +162,9 @@ class PresetManager:
 
     def save(self) -> None:
         """Сохраняет кастомные пресеты в JSON (атомарно через временный файл)."""
-        payload = {"presets": [p.to_dict() for p in self._custom]}
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(
-            dir=str(self._path.parent), prefix=".presets-", suffix=".tmp"
+        write_json_atomic(
+            self._path, {"presets": [p.to_dict() for p in self._custom]}
         )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, self._path)
-        finally:
-            if os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
 
     def load(self) -> None:
         """Загружает кастомные пресеты из JSON. При ошибке — пустой список."""

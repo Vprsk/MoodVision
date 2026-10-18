@@ -70,11 +70,6 @@ def status_color(status: str) -> str:
     return TEXT_SECONDARY
 
 
-def qcolor(hex_str: str) -> QColor:
-    """Удобная обёртка создания QColor из HEX."""
-    return QColor(hex_str)
-
-
 def mix(hex_a: str, hex_b: str, ratio: float) -> str:
     """Смешивает два HEX-цвета. ratio=0 -> a, ratio=1 -> b.
 

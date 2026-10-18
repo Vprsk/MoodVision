@@ -30,9 +30,6 @@ def normalize_source(raw: str) -> str:
     raw = raw.strip()
     if raw.lower().startswith(SOURCE_WEBCAM_PREFIX):
         raw = raw[len(SOURCE_WEBCAM_PREFIX):].strip()
-    # Веб-камера: оставляем только числовой индекс
-    if raw.isdigit():
-        return raw
     return raw
 
 
@@ -159,7 +156,6 @@ class StreamConfig:
             stream_id=stream_id or uuid.uuid4().hex[:8],
             ui_settings=dict(data.get("ui_settings") or {}),
         )
-
 
 
 @dataclass

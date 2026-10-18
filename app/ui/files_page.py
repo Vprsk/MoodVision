@@ -56,6 +56,7 @@ from app.core.file_analysis import (
     list_analyses,
     load_log,
 )
+from app.core.format import format_hms
 from app.core.logging import get_logger
 from app.ui.widgets.badges import Badge, MetricCard
 from app.ui.widgets.episodes_timeline import TimelineCard
@@ -67,16 +68,6 @@ logger = get_logger("files_page")
 _VIDEO_FILTER = (
     "Видео (*.mp4 *.avi *.mkv *.mov *.webm *.mpeg *.mpg *.wmv);;Все файлы (*)"
 )
-
-
-def _format_seconds(seconds: float) -> str:
-    """Форматирует секунды в «ММ:СС» (или «Ч:ММ:СС» для длинных видео)."""
-    seconds = max(0, int(seconds))
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    if h > 0:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m:02d}:{s:02d}"
 
 
 class _FileDropZone(QFrame):
@@ -788,7 +779,7 @@ class FilesPage(QWidget):
         height = int(video.get("height") or 0)
         parts = []
         if duration > 0:
-            parts.append(_format_seconds(duration))
+            parts.append(format_hms(duration))
         if width and height:
             parts.append(f"{width}×{height}")
         if created:

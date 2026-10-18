@@ -9,12 +9,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.core.logging import get_logger
-from app.core.persistence import PROJECT_ROOT, STATE_DIR
+from app.core.persistence import STATE_DIR, write_json_atomic
 
 logger = get_logger("group_manager")
 
@@ -67,28 +67,9 @@ class GroupManager:
 
     def save(self) -> None:
         """Сохраняет группы в JSON (атомарно через временный файл)."""
-        import os
-        import tempfile
-
         payload = {"groups": [g.__dict__ for g in self.ordered()]}
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(
-            dir=str(self._path.parent), prefix=".groups-", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, self._path)
-            logger.debug("Сохранено %d групп в %s", len(payload["groups"]), self._path)
-        except OSError as exc:  # noqa: BLE001
-            logger.error("Не удалось сохранить группы в %s: %s", self._path, exc)
-            raise
-        finally:
-            if os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
+        write_json_atomic(self._path, payload)
+        logger.debug("Сохранено %d групп в %s", len(payload["groups"]), self._path)
 
     # --- CRUD групп ---------------------------------------------------------
 

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import theme as T
+from app.core.episodes import EMOTION_RU
 from app.core.stream_config import ClientTrack
 from app.ui.widgets.badges import Badge
 
@@ -58,7 +59,7 @@ class _VisitorRow(QFrame):
         emo = QHBoxLayout()
         emo.setSpacing(10)
         color = T.emotion_color(track.dominant_emotion.value)
-        self._emo_label = QLabel(f"{self._emotion_ru(track.dominant_emotion.value)}"
+        self._emo_label = QLabel(f"{EMOTION_RU.get(track.dominant_emotion.value, track.dominant_emotion.value)}"
                                  f" · {track.dominant_confidence:.2f}")
         self._emo_label.setStyleSheet(
             f"color: {T.TEXT_SECONDARY}; font-size: 12px;"
@@ -86,20 +87,6 @@ class _VisitorRow(QFrame):
             """
         )
         root.addWidget(self._bar)
-
-    @staticmethod
-    def _emotion_ru(value: str) -> str:
-        mapping = {
-            "neutral": "Нейтрально",
-            "happy": "Радость",
-            "sad": "Грусть",
-            "angry": "Злость",
-            "surprise": "Удивление",
-            "fear": "Страх",
-            "disgust": "Отвращение",
-            "unknown": "Не определено",
-        }
-        return mapping.get(value, value)
 
 
 class VisitorsPanel(QWidget):

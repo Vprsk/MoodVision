@@ -11,7 +11,7 @@ from typing import Optional
 import cv2
 import numpy as np
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QImage, QPainter, QPixmap
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from app import theme as T

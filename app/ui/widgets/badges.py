@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
 
 from app import theme as T
 
@@ -65,21 +65,3 @@ class MetricCard(QFrame):
         self._value.setText(value)
         if caption:
             self._caption.setText(caption)
-
-
-class SectionTitle(QWidget):
-    """Заголовок секции с возможным действием справа."""
-
-    def __init__(self, text: str, parent=None) -> None:
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        label = QLabel(text)
-        label.setObjectName("SectionTitle")
-        layout.addWidget(label)
-        layout.addStretch(1)
-        self._action_layout = layout
-
-    def add_widget(self, widget: QWidget) -> None:
-        """Добавляет виджет (например, кнопку) справа от заголовка."""
-        self._action_layout.addWidget(widget)

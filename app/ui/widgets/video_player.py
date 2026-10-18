@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import theme as T
+from app.core.format import format_hms
 from app.ui.icons import (
     make_fullscreen_icon,
     make_pause_icon,
@@ -34,16 +35,6 @@ from app.ui.icons import (
 from app.ui.widgets.video_surface import VideoSurface
 
 
-def _fmt_time(seconds: float) -> str:
-    """Форматирует секунды в MM:SS (или H:MM:SS для длинных видео)."""
-    seconds = max(0, int(seconds))
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    if h > 0:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m:02d}:{s:02d}"
-
-
 class VideoPlayer(QWidget):
     """Композит: видео + панель управления воспроизведением."""
 
@@ -52,7 +43,6 @@ class VideoPlayer(QWidget):
     seek_forward_clicked = Signal()
     seek_backward_clicked = Signal()
     seek_to_ratio = Signal(float)  # 0..1 — позиция на прогресс-баре
-    fullscreen_clicked = Signal()  # запрос на полноэкранный режим
 
     SEEK_STEP_SECONDS = 10.0
 
@@ -173,17 +163,17 @@ class VideoPlayer(QWidget):
     def set_position(self, current: float, duration: float) -> None:
         """Обновляет прогресс-бар и таймкоды по позиции из воркера."""
         if duration > 0:
-            self._time_total.setText(_fmt_time(duration))
+            self._time_total.setText(format_hms(duration))
         if not self._scrubbing:
             ratio = (current / duration) if duration > 0 else 0.0
             self._slider.setValue(int(max(0.0, min(1.0, ratio)) * 1000))
-        self._time_now.setText(_fmt_time(current))
+        self._time_now.setText(format_hms(current))
 
     def set_media_info(self, src_fps: float, duration: float, seekable: bool) -> None:
         """Настраивает плеер под параметры источника."""
         self._duration = duration
         self._seekable = seekable
-        self._time_total.setText(_fmt_time(duration) if duration > 0 else "LIVE")
+        self._time_total.setText(format_hms(duration) if duration > 0 else "LIVE")
         # Для live-источников перемотка и прогресс-бар недоступны.
         self._slider.setEnabled(seekable and duration > 0)
         self._back_btn.setEnabled(seekable)
@@ -212,7 +202,6 @@ class VideoPlayer(QWidget):
 
     def _on_fullscreen(self) -> None:
         """Открывает текущий кадр в полноэкранном окне поверх плеера."""
-        self.fullscreen_clicked.emit()
         self._show_fullscreen()
 
     def _show_fullscreen(self) -> None:

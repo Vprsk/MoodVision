@@ -1,16 +1,21 @@
+"""Бенчмарк CurrentYoloVitModel на датасете Micro_Facial_Expressions.
+
+Запуск из корня проекта:  python benchmark.py
+"""
+
 import sys
 import random
 from collections import defaultdict
 from pathlib import Path
 import numpy as np
-import cv2
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datasets import load_dataset
 from sklearn.metrics import f1_score, confusion_matrix, classification_report
 from tqdm import tqdm
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Корень проекта = директория этого файла (benchmark.py лежит в корне).
+PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -18,6 +23,8 @@ from mood_base.models.current_yolo_vit import CurrentYoloVitModel
 from contracts.schemas import Emotion
 
 DATASET_NAME = "LaurenGurgiolo/Micro_Facial_Expressions"
+# Путь к модели относительно корня проекта (тот же, что в pipeline_registry).
+MODEL_PATH = "mood_base/model/yolov8n-face.pt"
 PER_CLASS = 150  # Сколько примеров максимум брать на КАЖДЫЙ класс (ровный баланс)
 
 # Датасет — смесь двух источников (FER-2013 + micro-expression) с разным
@@ -76,7 +83,7 @@ def main():
     print("Инициализация CurrentYoloVitModel...")
     # Обязательно analyze_every_n_frames=1, так как кадры не связаны
     model = CurrentYoloVitModel(
-        model_path="model/yolov8n-face.pt", 
+        model_path=MODEL_PATH,
         analyze_every_n_frames=1
     )
     
