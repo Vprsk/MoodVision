@@ -322,7 +322,7 @@ class VideoWorker(QThread):
             draw_detection(annotated, det)
 
         fps = self._measure_fps()
-        draw_fps(annotated, fps)
+        #draw_fps(annotated, fps)
 
         # Отдаём кадр в GUI. annotated уже копия frame, дополнительного copy() не требуется.
         self.frame_ready.emit(annotated)
