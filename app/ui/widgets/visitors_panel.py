@@ -104,7 +104,19 @@ class VisitorsPanel(QWidget):
             f"color: {T.TEXT_PRIMARY}; font-size: 16px; font-weight: 700;"
             " background: transparent; border: none;"
         )
-        root.addWidget(header)
+        # Счётчик «(всего: N)» — на той же строке, сразу после заголовка.
+        self._total_label = QLabel("(всего: 0)")
+        self._total_label.setStyleSheet(
+            f"color: {T.TEXT_SECONDARY}; font-size: 13px;"
+            " background: transparent; border: none;"
+        )
+        head_row = QHBoxLayout()
+        head_row.setContentsMargins(0, 0, 0, 0)
+        head_row.setSpacing(8)
+        head_row.addWidget(header)
+        head_row.addWidget(self._total_label)
+        head_row.addStretch(1)
+        root.addLayout(head_row)
 
         # Прокручиваемая область со списком строк.
         scroll = QScrollArea()
@@ -129,6 +141,10 @@ class VisitorsPanel(QWidget):
         )
         ph.setAlignment(Qt.AlignCenter)
         return ph
+
+    def set_total(self, total: int) -> None:
+        """Обновляет счётчик рядом с заголовком: «(всего: N)»."""
+        self._total_label.setText(f"(всего: {int(total)})")
 
     def update_tracks(self, tracks: List[ClientTrack]) -> None:
         """Перерисовывает список клиентов (сортировка: инциденты сверху)."""

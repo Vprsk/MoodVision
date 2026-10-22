@@ -96,6 +96,9 @@ class MainWindow(QMainWindow):
         self.files_page.open_history_requested.connect(
             lambda: self._navigate("history")
         )
+        # Поток удалён на странице «Потоки» — сразу перезаписываем состояние,
+        # чтобы удалённый поток не вернулся после перезапуска приложения.
+        self.streams_page.stream_deleted.connect(self._on_stream_deleted)
 
         self._navigate("streams")
 
@@ -114,6 +117,14 @@ class MainWindow(QMainWindow):
     def _on_analysis_completed(self, _result_dir: str) -> None:
         """Обновляет «Историю» после завершения анализа файла."""
         self.history_page.refresh()
+
+    def _on_stream_deleted(self, _stream_id: str) -> None:
+        """Сохраняет состояние сразу после удаления потока.
+
+        Без этого удалённый поток вернулся бы при следующем запуске:
+        файл состояния перезаписывался только при закрытии окна.
+        """
+        self._save_streams()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt API)
         """Сохраняет конфиги потоков и пресеты, останавливает воркеры."""

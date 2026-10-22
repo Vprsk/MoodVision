@@ -37,6 +37,18 @@ TRACK_TTL_SECONDS = 10.0
 # дольше — воркер остаётся в _stopping_workers до фактического finished.
 STOP_WAIT_MS = 3000
 
+# Сколько мс ждать завершения всех воркеров при закрытии приложения. Здесь
+# ждать можно дольше: первая загрузка модели (YOLO + ViT) занимает секунды,
+# и без этого ожидания Qt ругался бы «QThread: Destroyed while thread is
+# still running».
+SHUTDOWN_WAIT_MS = 20000
+
+# Сколько мс ждать завершения воркера при удалении потока. Удаление вызывается
+# из GUI-потока, поэтому ждать долго нельзя — интерфейс «залипнет». Если воркер
+# не успел завершить текущий кадр, он доживёт сам: ссылка на него остаётся в
+# _stopping_workers до сигнала finished.
+REMOVE_WAIT_MS = 400
+
 
 @dataclass
 class StreamRuntime:
@@ -69,6 +81,9 @@ class StreamManager(QObject):
     tracks_updated = Signal(str, list)            # stream_id, list[ClientTrack]
     incident_raised = Signal(str, str)            # stream_id, описание
     stream_finished = Signal(str)                 # stream_id (поток завершился)
+    stream_removed = Signal(str)                  # stream_id (поток удалён)
+    # Миниатюра потока: stream_id + уменьшенный кадр (BGR numpy).
+    frame_preview = Signal(str, object)           # stream_id, frame
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -101,6 +116,9 @@ class StreamManager(QObject):
 
         worker = VideoWorker(runtime.config)
         worker.frame_ready.connect(self._on_frame_ready)
+        worker.preview_ready.connect(
+            lambda frame, rid=stream_id: self._on_preview_ready(rid, frame)
+        )
         worker.result_ready.connect(
             lambda result, rid=stream_id: self._on_result(rid, result)
         )
@@ -117,15 +135,20 @@ class StreamManager(QObject):
         logger.info("Поток %s запущен (источник: %s)", stream_id, runtime.config.capture_source)
         return True
 
-    def stop_stream(self, stream_id: str) -> None:
-        """Останавливает воркер потока (мягко просит завершиться)."""
+    def stop_stream(self, stream_id: str, wait_ms: int = STOP_WAIT_MS) -> None:
+        """Останавливает воркер потока (мягко просит завершиться).
+
+        wait_ms — сколько мс ждать фактического завершения воркера. Если
+        воркер не успел (долгий инференс кадра), он доживает сам: ссылка
+        удерживается в _stopping_workers до сигнала finished.
+        """
         runtime = self._runtimes.get(stream_id)
         if runtime is None or runtime.worker is None:
             return
         worker = runtime.worker
         runtime.stopping = True
         worker.stop()
-        if worker.wait(STOP_WAIT_MS):
+        if worker.wait(wait_ms):
             # Поток завершился за отведённое время — ссылку можно снимать:
             # уничтожение завершённого QThread безопасно.
             self._stopping_workers.discard(worker)
@@ -143,32 +166,71 @@ class StreamManager(QObject):
             logger.warning(
                 "Поток %s не успел остановиться за %s мс, вордер удерживается до finished",
                 stream_id,
-                STOP_WAIT_MS,
+                wait_ms,
             )
         runtime.last_status = "Выключено"
         runtime.fps = 0.0
         self.stream_status_changed.emit(stream_id, runtime.last_status)
 
-    def remove_stream(self, stream_id: str) -> None:
-        """Останавливает и удаляет поток из менеджера."""
-        self.stop_stream(stream_id)
+    def remove_stream(self, stream_id: str) -> bool:
+        """Останавливает и удаляет поток из менеджера.
+
+        Возвращает True, если поток был найден и удалён. Ожидание завершения
+        воркера намеренно короткое (REMOVE_WAIT_MS): метод вызывается из
+        GUI-потока, и долгое ожидание «подвешивало» бы интерфейс. Если воркер
+        не успел завершить кадр, он доживёт сам — ссылка на него остаётся в
+        _stopping_workers до сигнала finished.
+        """
+        runtime = self._runtimes.get(stream_id)
+        if runtime is None:
+            return False
+
+        worker = runtime.worker
+        if worker is not None:
+            runtime.stopping = True
+            worker.stop()
+            if worker.wait(REMOVE_WAIT_MS):
+                # Воркер завершился — ссылку можно снять безопасно.
+                self._stopping_workers.discard(worker)
+                runtime.worker = None
+                runtime.stopping = False
+            else:
+                # Воркер ещё жив: удерживаем ссылку до finished, иначе QThread
+                # будет уничтожен во время работы (аварийное завершение).
+                self._stopping_workers.add(worker)
+                logger.warning(
+                    "Поток %s удалён, но воркер ещё работает — удерживается до finished",
+                    stream_id,
+                )
+
+        # Убираем runtime из реестра: поток больше не отображается в UI и
+        # не участвует в сохранении состояния.
         self._runtimes.pop(stream_id, None)
+        self.stream_removed.emit(stream_id)
+        logger.info("Поток %s удалён из менеджера", stream_id)
+        return True
 
     def stop_all(self) -> None:
         """Останавливает все потоки (при закрытии приложения)."""
         for stream_id in list(self._runtimes.keys()):
             self.stop_stream(stream_id)
-        # Страховка на выход: воркеры, не уложившиеся в таймаут stop_stream,
-        # ещё немного ждём, чтобы приложение не завершилось с живыми QThread.
+        # Страховка на выход: воркеры, не уложившиеся в таймаут stop_stream
+        # (например, ещё грузится модель), ещё немного ждём, чтобы приложение
+        # не завершилось с живыми QThread.
         pending = [w for w in self._stopping_workers if w.isRunning()]
         if not pending:
             return
-        deadline = time.monotonic() + STOP_WAIT_MS / 1000.0
+        deadline = time.monotonic() + SHUTDOWN_WAIT_MS / 1000.0
         for w in pending:
             remaining_ms = int((deadline - time.monotonic()) * 1000)
             if remaining_ms <= 0:
                 break
             w.wait(remaining_ms)
+        still_running = [w for w in self._stopping_workers if w.isRunning()]
+        if still_running:
+            logger.warning(
+                "Не все воркеры завершились при закрытии: %d", len(still_running)
+            )
 
     def toggle_stream(self, stream_id: str) -> None:
         """Переключает состояние потока: запуск <-> остановка."""
@@ -202,6 +264,13 @@ class StreamManager(QObject):
         # Кадры обрабатываются напрямую в UI через собственные подключения,
         # слот оставлен для будущей централизованной обработки/записи.
         return
+
+    def _on_preview_ready(self, stream_id: str, frame) -> None:  # noqa: ANN001
+        """Пересылает кадр-превью в UI (миниатюра в списке потоков)."""
+        runtime = self._runtimes.get(stream_id)
+        if runtime is None or runtime.stopping:
+            return
+        self.frame_preview.emit(stream_id, frame)
 
     def _on_status(self, stream_id: str, status: str) -> None:
         runtime = self._runtimes.get(stream_id)

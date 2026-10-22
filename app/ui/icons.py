@@ -51,6 +51,42 @@ def make_plus_icon(
     return QIcon(px)
 
 
+def make_minus_icon(
+    box: int = 24,
+    color: str = "#ffffff",
+    arm: float = 0.56,        # длина луча (доля от box)
+    thickness: float = 0.14,  # толщина луча (доля от box)
+    corner: float = 0.5,      # скругление концов (доля от толщины)
+    dpr: int = 3,
+) -> QIcon:
+    """Возвращает QIcon с аккуратно нарисованным «минусом».
+
+    Горизонтальный скруглённый прямоугольник — по той же геометрии, что и
+    горизонтальный луч в make_plus_icon, поэтому «+» и «−» выглядят
+    одинаково стилизованно.
+    """
+    px = QPixmap(box * dpr, box * dpr)
+    px.setDevicePixelRatio(dpr)
+    px.fill(Qt.transparent)
+
+    painter = QPainter(px)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(color))
+
+    c = box / 2.0
+    arm_len = box * arm / 2.0
+    thick = box * thickness
+    rad = thick * corner
+
+    painter.drawRoundedRect(
+        QRectF(c - arm_len, c - thick / 2.0, arm_len * 2.0, thick), rad, rad
+    )
+    painter.end()
+
+    return QIcon(px)
+
+
 def _icon_from_painter(box: int, dpr: int, draw_fn) -> QIcon:
     """Создаёт QIcon, делегируя отрисовку функции draw_fn(painter, box)."""
     px = QPixmap(box * dpr, box * dpr)

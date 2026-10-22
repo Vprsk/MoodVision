@@ -90,6 +90,7 @@ def _register_builtin_pipelines() -> None:
                 "yolo_imgsz": 416,
                 "analyze_every_n_frames": 5,
                 "frame_scale": 0.5,
+                "batch_size": 8,
             },
             description=(
                 "Детекция и трекинг лиц (YOLOv8-face + ByteTrack) с "

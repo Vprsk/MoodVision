@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -42,9 +43,10 @@ from app.core.stream_config import (
     ClientTrack,
 )
 from app.core.stream_manager import StreamManager, StreamRuntime
-from app.ui.icons import make_plus_icon
-from app.ui.widgets.badges import Badge, MetricCard
+from app.ui.icons import make_minus_icon, make_plus_icon
+from app.ui.widgets.badges import Badge
 from app.ui.widgets.incident_banner import IncidentBanner
+from app.ui.widgets.thumbnail import Thumbnail
 from app.ui.widgets.video_player import VideoPlayer
 from app.ui.widgets.visitors_panel import VisitorsPanel
 
@@ -54,14 +56,49 @@ logger = get_logger("streams_page")
 # Сигнал треков приходит на каждом кадре, но панель обновляем реже.
 VISITORS_REFRESH_SECONDS = 0.2  # ~5 раз в секунду
 
-# Подпись под метрикой FPS (заменяет «Пригодных кадров», когда нет видео).
-FPS_CAPTION = "FPS обработки"
+
+class _ElidedLabel(QLabel):
+    """QLabel, обрезающий длинный текст многоточием по ширине виджета."""
+
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        super().setText(text)
+        self.setToolTip(text)
+        self.setMinimumWidth(0)
+        # Expanding: метка занимает всё свободное место в строке и сжимается
+        # вместе с ней; minimumSizeHint переопределён, иначе QLabel требует
+        # ширину полного текста и карточка распирает сайдбар.
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+    def setText(self, text: str) -> None:  # noqa: N802 (Qt API)
+        self._full_text = text
+        self.setToolTip(text)
+        self._apply_elide()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 (Qt API)
+        # Разрешаем сжимать до нуля — текст обрезается многоточием.
+        return QSize(0, self.fontMetrics().height())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        super().resizeEvent(event)
+        self._apply_elide()
+
+    def _apply_elide(self) -> None:
+        metrics = self.fontMetrics()
+        elided = metrics.elidedText(
+            self._full_text, Qt.ElideRight, max(0, self.width())
+        )
+        super().setText(elided)
 
 
 class _CameraItem(QFrame):
-    """Элемент списка камер: имя, цвет-статус, текстовый статус, бейдж."""
+    """Элемент списка камер: миниатюра, имя, цвет-статус, текстовый статус, бейдж."""
 
-    menu_requested = Signal()  # нажали «⋯» — показать меню действий с потоком
+    remove_requested = Signal()  # нажали «−» — удалить поток
+
+    # Размер миниатюры (ширина, высота) в px.
+    THUMB_SIZE = (76, 46)
 
     def __init__(self, runtime: StreamRuntime, parent=None) -> None:
         super().__init__(parent)
@@ -72,21 +109,21 @@ class _CameraItem(QFrame):
             " border-radius: 10px;"
         )
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(10)
 
-        self._dot = QLabel("●")
-        self._dot.setStyleSheet(f"color: {T.STATUS_IDLE}; font-size: 14px;")
-        layout.addWidget(self._dot)
+        # Миниатюра потока: показывает, что сейчас проигрывается в кадре.
+        self._thumbnail = Thumbnail(self.THUMB_SIZE, "Нет сигнала")
+        layout.addWidget(self._thumbnail, 0, Qt.AlignVCenter)
 
         col = QVBoxLayout()
         col.setSpacing(2)
-        self._name = QLabel(runtime.config.name)
+        self._name = _ElidedLabel(runtime.config.name)
         self._name.setStyleSheet(
             f"color: {T.TEXT_PRIMARY}; font-weight: 600; background: transparent;"
             " border: none;"
         )
-        self._status = QLabel("Выключено")
+        self._status = _ElidedLabel("Выключено")
         self._status.setStyleSheet(
             f"color: {T.TEXT_MUTED}; font-size: 12px; background: transparent;"
             " border: none;"
@@ -95,32 +132,28 @@ class _CameraItem(QFrame):
         col.addWidget(self._status)
         layout.addLayout(col, 1)
 
-        self._badge = Badge("—", T.TEXT_MUTED)
-        layout.addWidget(self._badge)
 
-        # Кнопка «⋯» — заметный способ открыть меню действий (переместить,
-        # переименовать, удалить), помимо правого клика по карточке.
-        self._menu_btn = QPushButton("⋯")
-        self._menu_btn.setFixedSize(26, 26)
-        self._menu_btn.setCursor(Qt.PointingHandCursor)
-        self._menu_btn.setToolTip("Действия с потоком")
-        self._menu_btn.setStyleSheet(
-            f"background: transparent; border: none; color: {T.TEXT_MUTED};"
-            " font-size: 16px; border-radius: 6px;"
+        # Кнопка «−» — быстрое удаление потока из списка.
+        self._remove_btn = QPushButton()
+        self._remove_btn.setFixedSize(26, 26)
+        self._remove_btn.setCursor(Qt.PointingHandCursor)
+        self._remove_btn.setToolTip("Удалить поток")
+        self._remove_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: none;"
+            f" border-radius: 6px; padding: 0; }}"
+            f"QPushButton:hover {{ background: {T.BG_CARD_HOVER};"
+            f" border: 1px solid {T.STATUS_DANGER}; }}"
         )
-        self._menu_btn.clicked.connect(self.menu_requested.emit)
-        layout.addWidget(self._menu_btn)
+        self._remove_btn.setIcon(make_minus_icon(box=18, color=T.TEXT_MUTED))
+        self._remove_btn.setIconSize(QSize(14, 14))
+        self._remove_btn.clicked.connect(self.remove_requested.emit)
+        layout.addWidget(self._remove_btn)
 
         self.setCursor(Qt.PointingHandCursor)
-
-    def menu_anchor(self) -> QPoint:
-        """Глобальная точка, откуда открыть меню (под кнопкой «⋯»)."""
-        return self._menu_btn.mapToGlobal(self._menu_btn.rect().bottomLeft())
 
     def set_status(self, status: str) -> None:
         """Обновляет индикатор статуса камеры."""
         color = T.status_color(status)
-        self._dot.setStyleSheet(f"color: {color}; font-size: 14px;")
         self._status.setText(status)
         self._status.setStyleSheet(
             f"color: {color}; font-size: 12px; background: transparent; border: none;"
@@ -128,6 +161,14 @@ class _CameraItem(QFrame):
 
     def set_badge(self, text: str, color: str) -> None:
         self._badge.set_badge(text, color)
+
+    def set_frame(self, frame_bgr) -> None:
+        """Обновляет миниатюру потока последним кадром."""
+        self._thumbnail.set_frame(frame_bgr)
+
+    def set_offline(self, offline: bool = True) -> None:
+        """Гасит миниатюру (поток остановлен — картинка «застывшая»)."""
+        self._thumbnail.set_offline(offline)
 
 
 class _GroupHeader(QWidget):
@@ -177,6 +218,9 @@ class _GroupHeader(QWidget):
 class StreamsPage(QWidget):
     """Страница живого мониторинга потоков."""
 
+    # Поток удалён из списка — окну нужно перезаписать файл состояния.
+    stream_deleted = Signal(str)
+
     def __init__(self, manager: StreamManager, group_manager: GroupManager, preset_manager=None, parent=None) -> None:
         super().__init__(parent)
         self.manager = manager
@@ -185,6 +229,10 @@ class StreamsPage(QWidget):
         self._selected_id: Optional[str] = None
         self._camera_widgets: Dict[str, _CameraItem] = {}
         self._frame_conns: Dict[str, object] = {}
+        # Последний кадр-превью каждого потока. Нужен, чтобы при перерисовке
+        # списка (перенос в группу, переименование) миниатюра не мигала
+        # «Нет сигнала», пока придёт следующий кадр.
+        self._preview_cache: Dict[str, object] = {}
         self._selected_tracks: List[ClientTrack] = []
         # Троттлинг панели посетителей: кэш последних треков + время.
         self._pending_tracks: List[ClientTrack] = []
@@ -193,6 +241,9 @@ class StreamsPage(QWidget):
         self._context_stream_id: Optional[str] = None
         self._context_group: Optional[str] = None
         self._current_pipeline_label: str = "—"
+        # Текущий FPS обработки выбранного потока (показывается в секции
+        # «Камера и обработка»).
+        self._current_fps: float = 0.0
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -203,12 +254,17 @@ class StreamsPage(QWidget):
         splitter.addWidget(self._build_detail())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([300, 1120])
+        splitter.setSizes([340, 1080])
         root.addWidget(splitter)
 
         # --- Сигналы менеджера ---
         self.manager.stream_status_changed.connect(self._on_status_changed)
         self.manager.tracks_updated.connect(self._on_tracks_updated)
+        # Кадры-превью для миниатюр в списке потоков.
+        self.manager.frame_preview.connect(self._on_frame_preview)
+        # Поток удалён в менеджере (кнопка «−», меню или внешний вызов) —
+        # обновляем список и сообщаем окну о необходимости перезаписать state.
+        self.manager.stream_removed.connect(self._on_stream_removed)
 
         self.refresh_stream_list()
 
@@ -217,7 +273,7 @@ class StreamsPage(QWidget):
     def _build_sidebar(self) -> QWidget:
         """Левая колонка: заголовок, кнопка добавления, список камер."""
         panel = QWidget()
-        panel.setFixedWidth(300)
+        panel.setFixedWidth(340)
         panel.setStyleSheet(f"background: {T.BG_DARKEST};")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(14, 16, 14, 16)
@@ -292,18 +348,6 @@ class StreamsPage(QWidget):
         head.addWidget(self._toggle_btn)
         layout.addLayout(head)
 
-        # --- Карточки метрик (по референсу) ---
-        cards = QHBoxLayout()
-        cards.setSpacing(12)
-        self._clients_metric = MetricCard("Клиентов", "0", "в кадре")
-        self._status_metric = MetricCard("Статус", "—", "по всем клиентам")
-        self._suitable_metric = MetricCard("Пригодных кадров", "—", "за сессию")
-        cards.addWidget(self._clients_metric)
-        cards.addWidget(self._status_metric)
-        cards.addWidget(self._suitable_metric)
-        cards.addStretch(1)
-        layout.addLayout(cards)
-
         # --- Видео + правая панель посетителей ---
         content = QHBoxLayout()
         content.setSpacing(14)
@@ -320,13 +364,23 @@ class StreamsPage(QWidget):
 
         layout.addLayout(content, 1)
 
-        # --- Журнал (таблица последних наблюдений) ---
-        journal_title = QLabel("Журнал")
-        journal_title.setStyleSheet(
-            f"color: {T.TEXT_PRIMARY}; font-size: 16px; font-weight: 700;"
-            " background: transparent; border: none;"
+        # --- Сворачиваемая секция «Журнал» (по образцу «Камера и обработка») ---
+        # По умолчанию развёрнута (журнал нужен постоянно), но секцию можно
+        # свернуть кнопкой — как «Камера и обработка».
+        self._journal_toggle = QPushButton("Журнал  ⌃")
+        self._journal_toggle.setObjectName("FlatButton")
+        self._journal_toggle.setCursor(Qt.PointingHandCursor)
+        self._journal_toggle.clicked.connect(self._toggle_journal)
+        layout.addWidget(self._journal_toggle)
+
+        self._journal_panel = QWidget()
+        self._journal_panel.setStyleSheet(
+            f"background: {T.BG_CARD}; border: 1px solid {T.BORDER};"
+            " border-radius: 10px;"
         )
-        layout.addWidget(journal_title)
+        jl = QVBoxLayout(self._journal_panel)
+        jl.setContentsMargins(8, 8, 8, 8)
+        jl.setSpacing(4)
 
         self._journal_table = QTableWidget(0, 5)
         self._journal_table.setHorizontalHeaderLabels(
@@ -345,7 +399,8 @@ class StreamsPage(QWidget):
         jh.setSectionResizeMode(2, QHeaderView.Stretch)
         jh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         jh.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        layout.addWidget(self._journal_table)
+        jl.addWidget(self._journal_table)
+        layout.addWidget(self._journal_panel)
 
         # --- Сворачиваемая секция «Камера и обработка» ---
         self._details_toggle = QPushButton("Камера и обработка  ⌄")
@@ -441,11 +496,15 @@ class StreamsPage(QWidget):
                 item.customContextMenuRequested.connect(
                     lambda pos, sid=rt.config.stream_id: self._show_stream_menu(sid)
                 )
-                item.menu_requested.connect(
-                    lambda sid=rt.config.stream_id, w=item: self._show_stream_menu(
-                        sid, w.menu_anchor()
+                item.remove_requested.connect(
+                    lambda sid=rt.config.stream_id: self._delete_stream(
+                        sid, confirm=False
                     )
                 )
+                cached = self._preview_cache.get(rt.config.stream_id)
+                if cached is not None:
+                    item.set_frame(cached)
+                item.set_offline(not rt.is_live)
                 self._camera_widgets[rt.config.stream_id] = item
                 self._list_layout.insertWidget(idx, item)
                 idx += 1
@@ -608,32 +667,57 @@ class StreamsPage(QWidget):
         if self._selected_id == stream_id:
             self._detail_title.setText(new_name)
 
-    def _delete_stream(self, stream_id: str) -> None:
-        """Удаляет поток (с подтверждением)."""
+    def _delete_stream(self, stream_id: str, confirm: bool = True) -> None:
+        """Удаляет поток: останавливает воркер, убирает из списка и сохранения.
+
+        confirm=True — спросить подтверждение (контекстное меню).
+        confirm=False — удалить сразу (кнопка «−» на карточке потока).
+
+        Само удаление выполняет StreamManager.remove_stream; реакция UI
+        (перерисовка списка, сброс детальной панели, перезапись state)
+        происходит в обработчике сигнала stream_removed.
+        """
         runtime = self.manager.get_runtime(stream_id)
         if runtime is None:
             return
-        if (
-            QMessageBox.question(
-                self,
-                "Удалить поток",
-                f"Удалить поток «{runtime.config.name}»?",
+        if confirm:
+            if (
+                QMessageBox.question(
+                    self,
+                    "Удалить поток",
+                    f"Удалить поток «{runtime.config.name}»?",
+                )
+                != QMessageBox.Yes
+            ):
+                return
+        if not self.manager.remove_stream(stream_id):
+            logger.warning(
+                "Поток %s не найден в менеджере — удаление пропущено", stream_id
             )
-            != QMessageBox.Yes
-        ):
-            return
+
+    def _on_stream_removed(self, stream_id: str) -> None:
+        """Поток удалён из менеджера — обновляем интерфейс.
+
+        Мог прийти сигнал и из других мест (например, из кода), поэтому
+        обработка единая: отключаем плеер, если удалён показываемый поток,
+        перерисовываем список и сообщаем окну о необходимости перезаписать
+        файл состояния.
+        """
         was_selected = self._selected_id == stream_id
         if was_selected:
             # Отвязываем плеер только если удаляем именно показываемый поток,
             # иначе «отвалился» бы поток, открытый в детальной панели.
             self._disconnect_video()
             self._selected_id = None
-        self.manager.remove_stream(stream_id)
+        # Кэш превью удалённого потока больше не нужен.
+        self._preview_cache.pop(stream_id, None)
         # При удалённом выбранном потоке refresh автовыберет первый
         # оставшийся; если потоков не осталось — сбрасываем панель.
         self.refresh_stream_list()
         if was_selected and self._selected_id is None:
             self._reset_detail()
+        # Сообщаем окну: поток удалён, нужно перезаписать файл состояния.
+        self.stream_deleted.emit(stream_id)
 
     def _reset_detail(self) -> None:
         """Сбрасывает правую панель, когда нечего показывать (нет потоков)."""
@@ -646,9 +730,7 @@ class StreamsPage(QWidget):
         self._pending_tracks = []
         self._last_visitors_update = 0.0
         self.visitors.update_tracks([])
-        self._clients_metric.set_value("0", "в кадре")
-        self._status_metric.set_value("—", "по всем клиентам")
-        self._suitable_metric.set_value("—", "за сессию")
+        self.visitors.set_total(0)
         self._frames_total = 0
         self._frames_with_faces = 0
         self._journal_table.setRowCount(0)
@@ -695,9 +777,7 @@ class StreamsPage(QWidget):
             self._pending_tracks = []
             self._last_visitors_update = 0.0
             self.visitors.update_tracks([])
-            self._clients_metric.set_value("0", "в кадре")
-            self._status_metric.set_value("—", "по всем клиентам")
-            self._suitable_metric.set_value("—", "за сессию")
+            self.visitors.set_total(0)
             self._frames_total = 0
             self._frames_with_faces = 0
             self._journal_table.setRowCount(0)
@@ -786,8 +866,11 @@ class StreamsPage(QWidget):
 
 
     def _on_fps_updated(self, fps: float) -> None:
-        """Обновляет метрику FPS для выбранного потока."""
-        self._suitable_metric.set_value(f"{fps:.1f}", FPS_CAPTION)
+        """Обновляет показатель FPS в секции «Камера и обработка»."""
+        self._current_fps = fps
+        self._details_pipeline.setText(
+            f"Пайплайн: {self._current_pipeline_label} · FPS: {fps:.1f}"
+        )
 
 
     def _on_add_clicked(self, group: Optional[str] = None) -> None:
@@ -837,6 +920,8 @@ class StreamsPage(QWidget):
         widget = self._camera_widgets.get(stream_id)
         if widget is not None:
             widget.set_status(status)
+            # Пока поток «в эфире», миниатюра живая; иначе — застывшая.
+            widget.set_offline(status != "В эфире")
 
         if stream_id == self._selected_id:
             runtime = self.manager.get_runtime(stream_id)
@@ -848,6 +933,19 @@ class StreamsPage(QWidget):
             )
             if not live:
                 self.player.set_placeholder("Нет сигнала")
+
+    def _on_frame_preview(self, stream_id: str, frame) -> None:
+        """Обновляет миниатюру потока в списке камер.
+
+        Кадр уже уменьшен воркером (PREVIEW_WIDTH), поэтому масштабирование
+        в GUI-виджете стоит дёшево. Кадр кладём в кэш — он переживает
+        перерисовку списка (перенос в группу, переименование потока).
+        """
+        self._preview_cache[stream_id] = frame
+        widget = self._camera_widgets.get(stream_id)
+        if widget is not None:
+            widget.set_frame(frame)
+            widget.set_offline(False)
 
     def _on_tracks_updated(self, stream_id: str, tracks: list) -> None:
         """Обновляет панель посетителей и метрики.
@@ -868,10 +966,10 @@ class StreamsPage(QWidget):
         # Кэшируем последние треки выбранного потока.
         self._pending_tracks = list(tracks)
         summary = StreamManager.summarize_tracks(tracks)
-        self._clients_metric.set_value(str(len(tracks)), "в кадре")
+        # Счётчик «(всего: N)» рядом с заголовком «Посетители».
+        self.visitors.set_total(len(tracks))
 
-        label, color = self._badge_for_summary(summary)
-        self._status_metric.set_value(label, color)
+        _, color = self._badge_for_summary(summary)
         incident_count = summary.get(STATUS_INCIDENT, 0)
         if incident_count > 0:
             self._incident_banner.set_incident(
@@ -943,10 +1041,18 @@ class StreamsPage(QWidget):
 
     def _toggle_details(self) -> None:
         """Разворачивает/сворачивает секцию «Камера и обработка»."""
-        visible = not self._details_panel.isVisible()
+        # isHidden() вместо isVisible(): последний вернул бы False, если
+        # родительское окно скрыто (например, в offscreen-режиме).
+        visible = self._details_panel.isHidden()
         self._details_panel.setVisible(visible)
         self._details_toggle.setText(
             f"Камера и обработка {'⌃' if visible else '⌄'}"
         )
+
+    def _toggle_journal(self) -> None:
+        """Разворачивает/сворачивает секцию «Журнал»."""
+        visible = self._journal_panel.isHidden()
+        self._journal_panel.setVisible(visible)
+        self._journal_toggle.setText(f"Журнал {'⌃' if visible else '⌄'}")
 
 

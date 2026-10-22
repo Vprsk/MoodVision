@@ -44,6 +44,14 @@ _RECONNECT_STEP_MS = 100         # шаг сна — чтобы быстро р�
 _OPEN_TIMEOUT_MS = 5000
 _READ_TIMEOUT_MS = 5000
 
+# Как часто отправлять кадр для миниатюры в списке потоков (секунды).
+# Миниатюра обновляется медленно — этого достаточно, чтобы видеть картинку,
+# и нагрузка на GUI-поток остаётся небольшой.
+PREVIEW_INTERVAL_SECONDS = 0.33  # ~3 раза в секунду
+
+# Ширина кадра-превью (px). Высота считается по пропорциям исходного кадра.
+PREVIEW_WIDTH = 240
+
 
 class VideoWorker(QThread):
     """Рабочий поток для одного видеопотока с управлением воспроизведением.
@@ -62,6 +70,10 @@ class VideoWorker(QThread):
 
     # Сигнал: аннотированный кадр (BGR numpy) готов к показу.
     frame_ready = Signal(np.ndarray)
+    # Сигнал: уменьшенный кадр (BGR numpy) для миниатюры в списке потоков.
+    # Отправляется реже, чем frame_ready (см. PREVIEW_INTERVAL_SECONDS),
+    # чтобы не гонять лишнюю конвертацию кадров в GUI-потоке.
+    preview_ready = Signal(np.ndarray)
     # Сигнал: результат обработки кадра (без самого кадра).
     result_ready = Signal(FrameResult)
     # Сигнал: текстовый статус потока (live / ошибка / остановлен и т.п.).
@@ -92,6 +104,9 @@ class VideoWorker(QThread):
         # Запрос перемотки в секундах (относительно текущей позиции).
         # Применяется в рабочем потоке, обнуляется после применения.
         self._pending_seek: Optional[float] = None
+
+        # Время последней отправки кадра-превью (для миниатюры в списке).
+        self._last_preview_at: float = 0.0
 
     @property
     def config(self) -> StreamConfig:
@@ -215,9 +230,21 @@ class VideoWorker(QThread):
             self._release()
             return
 
+        # Пока грузилась модель, мог прийти stop() (например, поток удалили
+        # из UI). В этом случае не запускаем обработку — сразу выходим.
+        if not self._running:
+            logger.info(
+                "Поток %s остановлен во время загрузки модели", self._config.stream_id
+            )
+            self._release()
+            return
+
         self.status_changed.emit("В эфире")
         logger.info("Поток %s в эфире (модель загружена)", self._config.stream_id)
         frame_id = 0
+        _batch: list[tuple[int, np.ndarray]] = []
+        _use_batch = hasattr(self._model, "predict_batch")
+        _batch_size = getattr(self._model, "batch_size", 1) if _use_batch else 1
 
         try:
             while self._running:
@@ -234,12 +261,10 @@ class VideoWorker(QThread):
                 # --- Применяем отложенную перемотку (если просили) ---
                 if self._pending_seek is not None:
                     self._apply_pending_seek()
+                    _batch.clear()
 
                 ret, frame = self._cap.read()
                 if not ret:
-                    # Для файлов это конец записи. Для live-источника
-                    # (RTSP/HTTP/веб-камера) длительность неизвестна, поэтому
-                    # такой EOF — почти всегда сетевой обрыв, а не конец.
                     if self._config.is_live and self._duration <= 0.0:
                         logger.warning(
                             "Потерян сигнал от live-источника %s (поток %s), пробуем переподключение…",
@@ -247,6 +272,7 @@ class VideoWorker(QThread):
                             self._config.stream_id,
                         )
                         self.status_changed.emit("Переподключение…")
+                        _batch.clear()
                         if self._reconnect():
                             continue
                         logger.error(
@@ -254,41 +280,64 @@ class VideoWorker(QThread):
                             source,
                             self._config.stream_id,
                         )
-                        break  # stop() во время переподключения
+                        break
+                    if _use_batch and _batch:
+                        results = self._model.predict_batch(_batch)
+                        for (fid, frm), res in zip(_batch, results):
+                            self._emit_batch_result(fid, frm, res)
+                        _batch.clear()
                     self.status_changed.emit("Поток завершён")
                     logger.info("Поток %s завершён (конец файла)", self._config.stream_id)
                     break
 
                 frame_id += 1
-                loop_start = time.perf_counter()
 
-                result: FrameResult = self._model.predict(frame_id, frame)
-
-                # Аннотируем копию кадра для отображения.
-                annotated = frame.copy()
-                for det in result.detections:
-                    draw_detection(annotated, det)
-
-                fps = self._measure_fps()
-                draw_fps(annotated, fps)
-
-                # Отдаём кадр в GUI. annotated уже копия frame (строка выше),
-                # дополнительного copy() не требуется.
-                self.frame_ready.emit(annotated)
-                self.result_ready.emit(result)
-                self.fps_updated.emit(fps)
-
-                # Сообщаем позицию для прогресс-бара.
-                current = self._current_position_seconds()
-                self.position_changed.emit(current, self._duration)
-
-                # Небольшая пауза, чтобы не грузить CPU на 100% при высоком FPS.
-                elapsed = time.perf_counter() - loop_start
-                if elapsed < 0.001:
-                    self.msleep(1)
+                if _use_batch:
+                    _batch.append((frame_id, frame))
+                    if len(_batch) >= _batch_size:
+                        results = self._model.predict_batch(_batch)
+                        for (fid, frm), res in zip(_batch, results):
+                            self._emit_batch_result(fid, frm, res)
+                        _batch.clear()
+                else:
+                    loop_start = time.perf_counter()
+                    result: FrameResult = self._model.predict(frame_id, frame)
+                    self._emit_batch_result(frame_id, frame, result)
+                    elapsed = time.perf_counter() - loop_start
+                    if elapsed < 0.001:
+                        self.msleep(1)
         finally:
             self._release()
             logger.info("Воркер потока %s завершён", self._config.stream_id)
+
+    def _emit_batch_result(
+        self, frame_id: int, frame: np.ndarray, result: FrameResult
+    ) -> None:
+        """Аннотирует кадр и эмитит все сигналы результата для одного кадра."""
+        loop_start = time.perf_counter()
+
+        # Аннотируем копию кадра для отображения.
+        annotated = frame.copy()
+        for det in result.detections:
+            draw_detection(annotated, det)
+
+        fps = self._measure_fps()
+        draw_fps(annotated, fps)
+
+        # Отдаём кадр в GUI. annotated уже копия frame, дополнительного copy() не требуется.
+        self.frame_ready.emit(annotated)
+        self._emit_preview(annotated)
+        self.result_ready.emit(result)
+        self.fps_updated.emit(fps)
+
+        # Сообщаем позицию для прогресс-бара.
+        current = self._current_position_seconds()
+        self.position_changed.emit(current, self._duration)
+
+        # Небольшая пауза, чтобы не грузить CPU на 100% при высоком FPS.
+        elapsed = time.perf_counter() - loop_start
+        if elapsed < 0.001:
+            self.msleep(1)
 
     def _read_media_meta(self) -> None:
         """Читает FPS и длительность источника, эмитит media_info."""
@@ -384,6 +433,31 @@ class VideoWorker(QThread):
                 return True
         return False
 
+    def _emit_preview(self, frame_bgr: np.ndarray) -> None:
+        """Отправляет уменьшенный кадр для миниатюры в списке потоков.
+
+        Кадр масштабируется до PREVIEW_WIDTH и отправляется не чаще, чем
+        раз в PREVIEW_INTERVAL_SECONDS — иначе GUI-поток тратил бы время
+        на конвертацию десятков кадров в секунду ради маленькой картинки.
+        """
+        now = time.monotonic()
+        if now - self._last_preview_at < PREVIEW_INTERVAL_SECONDS:
+            return
+        self._last_preview_at = now
+        try:
+            h, w = frame_bgr.shape[:2]
+            if w <= 0 or h <= 0:
+                return
+            scale = PREVIEW_WIDTH / float(w)
+            small = cv2.resize(
+                frame_bgr,
+                (PREVIEW_WIDTH, max(1, int(round(h * scale)))),
+                interpolation=cv2.INTER_AREA,
+            )
+        except Exception:  # noqa: BLE001 — превью не должно ломать поток
+            return
+        self.preview_ready.emit(small)
+
     def _emit_preview_frame(self) -> None:
         """Читает и показывает один кадр без инференса (для паузы+перемотка)."""
         if self._cap is None:
@@ -392,6 +466,7 @@ class VideoWorker(QThread):
         if not ret:
             return
         self.frame_ready.emit(frame.copy())
+        self._emit_preview(frame)
         self.position_changed.emit(
             self._current_position_seconds(), self._duration
         )
