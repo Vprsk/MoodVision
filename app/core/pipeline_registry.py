@@ -77,6 +77,22 @@ def _register_builtin_pipelines() -> None:
 
         return CurrentYoloVitModel(**params)
 
+    def _scene1_factory(**params: Any) -> BaseFaceEmotionModel:
+        from mood_base.models import Scene1FaceAudioModel
+
+        return Scene1FaceAudioModel(**params)
+
+    def _scene2_factory(**params: Any) -> BaseFaceEmotionModel:
+        from mood_base.models import Scene2FaceBodyAudioModel
+
+        return Scene2FaceBodyAudioModel(**params)
+
+    def _scene3_factory(**params: Any) -> BaseFaceEmotionModel:
+        from mood_base.models import Scene3BodyAudioModel
+
+        return Scene3BodyAudioModel(**params)
+
+    # 0. Базовый пайплайн (оставляем первым для обратной совместимости и тестов)
     register_pipeline(
         PipelineInfo(
             key="yolo_vit",
@@ -95,6 +111,84 @@ def _register_builtin_pipelines() -> None:
             description=(
                 "Детекция и трекинг лиц (YOLOv8-face + ByteTrack) с "
                 "классификацией 7 базовых эмоций (ViT)."
+            ),
+        )
+    )
+
+    # 1. Сцена 1: Лицо + Звук (прикассовая зона / крупный план)
+    register_pipeline(
+        PipelineInfo(
+            key="scene1_face_audio",
+            label="Сцена 1: Лицо + Звук",
+            factory=_scene1_factory,
+            defaults={
+                "model_path": "mood_base/model/yolov8n-face.pt",
+                "tracker_config": "configs/bytetrack.yaml",
+                "conf_threshold": 0.45,
+                "emotion_conf_threshold": 0.35,
+                "min_face_px": 48,
+                "alert_threshold": 0.65,
+                "temporal_window": 15,
+                "yolo_imgsz": 416,
+                "analyze_every_n_frames": 5,
+                "frame_scale": 0.5,
+            },
+            description=(
+                "Крупный план (стойка/касса): трекинг лиц YOLOv8-face + "
+                "фильтр качества лица (Quality Gate) + мимика (ViT) + эмоции по голосу."
+            ),
+        )
+    )
+
+    # 2. Сцена 2: Лицо + Звук + Тело (средняя дистанция / очередь / зал)
+    register_pipeline(
+        PipelineInfo(
+            key="scene2_face_body_audio",
+            label="Сцена 2: Лицо + Звук + Тело (Каскад)",
+            factory=_scene2_factory,
+            defaults={
+                "face_model_path": "mood_base/model/yolov8n-face.pt",
+                "pose_model_path": "mood_base/model/yolov8n-pose.pt",
+                "tracker_config": "configs/bytetrack.yaml",
+                "conf_threshold": 0.45,
+                "body_conf_threshold": 0.40,
+                "emotion_conf_threshold": 0.35,
+                "min_face_px": 64,
+                "alert_threshold": 0.65,
+                "temporal_window": 15,
+                "yolo_imgsz": 416,
+                "analyze_every_n_frames": 5,
+                "frame_scale": 0.5,
+            },
+            description=(
+                "Средняя дистанция (очередь/зал): непрерывный трекинг по телу "
+                "(YOLOv8-pose, 3 уровня языка тела) + условная мимика при видимом "
+                "лице (≥ 64 px) + эмоции по голосу."
+            ),
+        )
+    )
+
+    # 3. Сцена 3: Звук + Тело (общий план / дальняя дистанция без детекции лиц)
+    register_pipeline(
+        PipelineInfo(
+            key="scene3_body_audio",
+            label="Сцена 3: Звук + Тело (Общий план)",
+            factory=_scene3_factory,
+            defaults={
+                "pose_model_path": "mood_base/model/yolov8n-pose.pt",
+                "tracker_config": "configs/bytetrack.yaml",
+                "body_conf_threshold": 0.40,
+                "emotion_conf_threshold": 0.35,
+                "alert_threshold": 0.65,
+                "temporal_window": 15,
+                "yolo_imgsz": 416,
+                "analyze_every_n_frames": 5,
+                "frame_scale": 0.5,
+            },
+            description=(
+                "Дальний/общий план (лица < 40 px): модели лица отключены, "
+                "эмоции определяются по 3 уровням языка тела (YOLOv8-pose + позы + ViT) "
+                "и ведущему аудиоканалу."
             ),
         )
     )
