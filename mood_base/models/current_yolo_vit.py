@@ -105,6 +105,7 @@ class CurrentYoloVitModel(BaseFaceEmotionModel):
         analyze_every_n_frames: int = 5,
         frame_scale: float = 0.5,
         batch_size: int = 8,
+        cache_emotions: bool = True,
     ) -> None:
         # --- Выбор устройства (как в прототипе) ---
         if torch.cuda.is_available():
@@ -126,6 +127,7 @@ class CurrentYoloVitModel(BaseFaceEmotionModel):
         self.analyze_every_n_frames = analyze_every_n_frames
         self.frame_scale = frame_scale
         self.batch_size = max(1, batch_size)
+        self.cache_emotions = cache_emotions
 
         # --- Модели ---
         # YOLO — свой экземпляр на каждый объект (ByteTrack хранит треки).
@@ -201,11 +203,15 @@ class CurrentYoloVitModel(BaseFaceEmotionModel):
                             exc,
                         )
                         emotion, emotion_conf = "unknown", 0.0
-                    self._last_results[track_id] = (emotion, emotion_conf)
+                    if self.cache_emotions:
+                        self._last_results[track_id] = (emotion, emotion_conf)
                 else:
-                    emotion, emotion_conf = self._last_results.get(
-                        track_id, ("unknown", 0.0)
-                    )
+                    if self.cache_emotions:
+                        emotion, emotion_conf = self._last_results.get(
+                            track_id, ("unknown", 0.0)
+                        )
+                    else:
+                        emotion, emotion_conf = "unknown", 0.0
 
                 detections.append(
                     FaceDetection(

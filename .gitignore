@@ -9,3 +9,6 @@ references/
 *.json
 /state/
 /logs/
+/research
+/RESULTS
+/tests
