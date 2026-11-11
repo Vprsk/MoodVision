@@ -23,6 +23,11 @@ from mood_base.models.current_yolo_vit import (
     EMOTION_MODEL_ID,
     _get_emotion_pipeline,
 )
+from mood_base.models.efficientnet_b0 import (
+    DEFAULT_EMOTION_CONF_THRESHOLD,
+    EFFICIENTNET_B0_MODEL_NAME,
+    EfficientNetB0EmotionClassifier,
+)
 
 logger = get_logger("multimodal_scenes")
 
@@ -516,3 +521,197 @@ class Scene3BodyAudioModel(BaseFaceEmotionModel):
             audio=audio_res,
             track_events=track_events,
         )
+
+
+class Scene4FaceAudioEfficientNetB0Model(BaseFaceEmotionModel):
+    """Сцена 4: Лицо (YOLOv8-face + ByteTrack + Quality Gate + EfficientNet-B0) + Звук.
+
+    Полный аналог Сцены 1, но классификатор эмоций — EfficientNet-B0
+    (модель enet_b0_8_best_afew из библиотеки hsemotion) вместо ViT.
+    """
+
+    def __init__(
+        self,
+        model_path: str = "mood_base/model/yolov8n-face.pt",
+        audio_model_id: str = DEFAULT_AUDIO_MODEL_ID,
+        tracker_config: str = "configs/bytetrack.yaml",
+        conf_threshold: float = 0.45,
+        emotion_conf_threshold: float = DEFAULT_EMOTION_CONF_THRESHOLD,
+        min_face_px: int = 48,
+        alert_threshold: float = 0.65,
+        temporal_window: int = 15,
+        yolo_imgsz: int = 416,
+        analyze_every_n_frames: int = 5,
+        frame_scale: float = 0.5,
+        emotion_model_name: str = EFFICIENTNET_B0_MODEL_NAME,
+    ) -> None:
+        self.device, self.yolo_device, self.torch_dtype = _select_device()
+        self.tracker_config = tracker_config
+        self.conf_threshold = conf_threshold
+        self.emotion_conf_threshold = emotion_conf_threshold
+        self.yolo_imgsz = yolo_imgsz
+        self.analyze_every_n_frames = analyze_every_n_frames
+        self.frame_scale = frame_scale
+        self.min_face_px = min_face_px
+
+        self.face_model = YOLO(model_path)
+        # EfficientNet-B0 классификатор эмоций — общий процессный кэш.
+        self.emotion_classifier = EfficientNetB0EmotionClassifier(
+            model_name=emotion_model_name,
+            device=self.device,
+            dtype=self.torch_dtype,
+            emotion_conf_threshold=emotion_conf_threshold,
+        )
+        self.audio_analyzer = AudioAffectAnalyzer(
+            model_id=audio_model_id,
+            device=self.device,
+            torch_dtype=self.torch_dtype,
+            lazy_load=True,
+        )
+        self.fusion = MultimodalFusionEngine(
+            min_face_px=min_face_px,
+            temporal_window=temporal_window,
+            alert_threshold=alert_threshold,
+        )
+        self._last_results: dict[int, tuple[Emotion, float]] = {}
+        logger.info(
+            "SCENE 4 (EfficientNet-B0): активна модель эмоций %s, "
+            "устройство=%s, dtype=%s, порог=%.2f",
+            emotion_model_name,
+            self.device,
+            self.torch_dtype,
+            emotion_conf_threshold,
+        )
+
+    def _classify_emotion(self, face_bgr: np.ndarray) -> tuple[Emotion, float]:
+        face_rgb = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB)
+        predictions = self.emotion_classifier(face_rgb)
+        best = predictions[0]
+        confidence = float(best["score"])
+        if confidence < self.emotion_conf_threshold:
+            return Emotion.UNKNOWN, confidence
+        label = best["label"].lower()
+        logger.debug(
+            "SCENE 4 (EfficientNet-B0): классифицировано '%s' (conf=%.3f)",
+            label,
+            confidence,
+        )
+        return Emotion(label), confidence
+
+
+    def predict(
+        self,
+        frame_id: int,
+        frame: np.ndarray,
+        audio_chunk: np.ndarray | None = None,
+    ) -> FrameResult:
+        small = cv2.resize(
+            frame,
+            None,
+            fx=self.frame_scale,
+            fy=self.frame_scale,
+            interpolation=cv2.INTER_LINEAR,
+        )
+        results = self.face_model.track(
+            small,
+            persist=True,
+            tracker=self.tracker_config,
+            conf=self.conf_threshold,
+            imgsz=self.yolo_imgsz,
+            device=self.yolo_device,
+            verbose=False,
+        )
+        boxes = results[0].boxes
+        detections: list[FaceDetection] = []
+        current_ids: set[int] = set()
+        if boxes is not None and boxes.id is not None:
+            h, w = frame.shape[:2]
+            for track_id, face_conf, raw_bbox in zip(
+                boxes.id.int().tolist(),
+                boxes.conf.tolist(),
+                boxes.xyxy.int().tolist(),
+            ):
+                current_ids.add(track_id)
+                x1 = max(0, int(raw_bbox[0] / self.frame_scale))
+                y1 = max(0, int(raw_bbox[1] / self.frame_scale))
+                x2 = min(w, int(raw_bbox[2] / self.frame_scale))
+                y2 = min(h, int(raw_bbox[3] / self.frame_scale))
+                if x2 <= x1 or y2 <= y1:
+                    continue
+
+                bbox = BoundingBox(x_min=x1, y_min=y1, x_max=x2, y_max=y2)
+                passed_gate = self.fusion.check_face_quality(frame, bbox)
+
+                if not passed_gate:
+                    emotion, emotion_conf = Emotion.UNKNOWN, 0.0
+                elif (
+                    frame_id % self.analyze_every_n_frames == 0
+                    or track_id not in self._last_results
+                ):
+                    try:
+                        emotion, emotion_conf = self._classify_emotion(
+                            frame[y1:y2, x1:x2]
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Ошибка классификации лица (track=%s): %s",
+                            track_id,
+                            exc,
+                        )
+                        emotion, emotion_conf = Emotion.UNKNOWN, 0.0
+                    self._last_results[track_id] = (emotion, emotion_conf)
+                else:
+                    emotion, emotion_conf = self._last_results[track_id]
+
+                detections.append(
+                    FaceDetection(
+                        track_id=track_id,
+                        bbox=bbox,
+                        emotion=emotion,
+                        face_confidence=float(face_conf),
+                        emotion_confidence=float(emotion_conf),
+                        passed_quality_gate=passed_gate,
+                    )
+                )
+
+        for stale_tid in [
+            tid for tid in self._last_results if tid not in current_ids
+        ]:
+            del self._last_results[stale_tid]
+
+
+        # Анализ звука и слияние модальностей (Лицо + Звук)
+        audio_res = self.audio_analyzer.analyze(audio_chunk)
+        track_events = self.fusion.fuse_scene1(detections, audio_res)
+        events_by_tid = {ev.track_id: ev for ev in track_events}
+
+        # Прокидываем итоговую мультимодальную эмоцию в detections для отрисовки в UI
+        updated_detections: list[FaceDetection] = []
+        for det in detections:
+            ev = (
+                events_by_tid.get(det.track_id)
+                if det.track_id is not None
+                else None
+            )
+            if ev is not None and (
+                ev.dominant_modality == "audio"
+                or ev.is_negative_alert
+                or det.emotion == Emotion.UNKNOWN
+            ):
+                det = det.model_copy(
+                    update={
+                        "emotion": ev.final_emotion,
+                        "emotion_confidence": round(
+                            max(det.emotion_confidence, ev.negative_score), 4
+                        ),
+                    }
+                )
+            updated_detections.append(det)
+
+        return FrameResult(
+            frame_id=frame_id,
+            detections=updated_detections,
+            audio=audio_res,
+            track_events=track_events,
+        )
+

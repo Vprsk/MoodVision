@@ -92,6 +92,11 @@ def _register_builtin_pipelines() -> None:
 
         return Scene3BodyAudioModel(**params)
 
+    def _scene4_factory(**params: Any) -> BaseFaceEmotionModel:
+        from mood_base.models import Scene4FaceAudioEfficientNetB0Model
+
+        return Scene4FaceAudioEfficientNetB0Model(**params)
+
     # 0. Базовый пайплайн (оставляем первым для обратной совместимости и тестов)
     register_pipeline(
         PipelineInfo(
@@ -189,6 +194,33 @@ def _register_builtin_pipelines() -> None:
                 "Дальний/общий план (лица < 40 px): модели лица отключены, "
                 "эмоции определяются по 3 уровням языка тела (YOLOv8-pose + позы + ViT) "
                 "и ведущему аудиоканалу."
+            ),
+        )
+    )
+
+    # 4. Сцена 4: Лицо + Звук (EfficientNet-B0 вместо ViT)
+    register_pipeline(
+        PipelineInfo(
+            key="scene4_face_audio_efficientnet_b0",
+            label="Сцена 4: Лицо + Звук (EfficientNet-B0)",
+            factory=_scene4_factory,
+            defaults={
+                "model_path": "mood_base/model/yolov8n-face.pt",
+                "tracker_config": "configs/bytetrack.yaml",
+                "conf_threshold": 0.45,
+                "emotion_conf_threshold": 0.35,
+                "min_face_px": 48,
+                "alert_threshold": 0.65,
+                "temporal_window": 15,
+                "yolo_imgsz": 416,
+                "analyze_every_n_frames": 5,
+                "frame_scale": 0.5,
+                "emotion_model_name": "enet_b0_8_best_afew",
+            },
+            description=(
+                "Крупный план (стойка/касса): трекинг лиц YOLOv8-face + "
+                "фильтр качества лица (Quality Gate) + мимика EfficientNet-B0 "
+                "(hsemotion enet_b0_8_best_afew) + эмоции по голосу."
             ),
         )
     )
